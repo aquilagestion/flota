@@ -52,11 +52,11 @@ async function fetchWithTimeout_(url, options = {}, timeoutMs = REQUEST_TIMEOUT_
 }
 
 export const sheetsApi = {
-  async get(action, params = {}) {
+  async get(action, params = {}, options = {}) {
     const base = assertApiUrl_();
     const qs = new URLSearchParams({ action, ...params });
     const url = `${base}?${qs.toString()}`;
-    const res = await fetchWithTimeout_(url, { method: "GET" });
+    const res = await fetchWithTimeout_(url, { method: "GET" }, options?.timeoutMs || REQUEST_TIMEOUT_MS);
     const json = await readJson_(res);
     if (!res.ok || (json && json.status === "error")) {
       const msg = json?.message || `HTTP ${res.status}`;
@@ -66,7 +66,7 @@ export const sheetsApi = {
   },
 
   // OJO: tu Apps Script espera body plano: { action, secret, ...payload }
-  async post(action, payload = {}, meta = {}) {
+  async post(action, payload = {}, meta = {}, options = {}) {
     const base = assertApiUrl_();
     const secret = getSecret_();
     const body = {
@@ -75,11 +75,15 @@ export const sheetsApi = {
       ...(meta?.user_email ? { user_email: String(meta.user_email).trim().toLowerCase() } : {}),
       ...(payload || {}),
     };
-    const res = await fetchWithTimeout_(base, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await fetchWithTimeout_(
+      base,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      options?.timeoutMs || REQUEST_TIMEOUT_MS
+    );
     const json = await readJson_(res);
     if (!res.ok || (json && json.status === "error")) {
       const msg = json?.message || `HTTP ${res.status}`;

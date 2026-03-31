@@ -19,6 +19,10 @@ Además de tus variables actuales, la app ahora usa Firebase:
 - `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
 - `EXPO_PUBLIC_FIREBASE_APP_ID`
 
+Opcional para OCR de odometro por microservicio (PaddleOCR + OpenCV):
+
+- `EXPO_PUBLIC_ODOMETER_OCR_URL` (ejemplo: `http://192.168.1.50:8080`)
+
 ## Salida local con `build-apk.bat`
 El APK (release) se copiará siempre a `C:\flota\flota_releases` con formato:
 `Gestiflota Version <version_sin_puntos> <yyyyMMdd> <HHmmss>.apk`

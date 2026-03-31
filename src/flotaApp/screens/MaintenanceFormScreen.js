@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
 import { localDb } from "../storage/localDb";
 import { syncService } from "../sync/syncService";
@@ -7,6 +7,7 @@ import { theme } from "../ui/theme";
 import { DateField, SelectField, TextField } from "../ui/form/Fields";
 import ImageField from "../ui/form/ImageField";
 import { sheetsApi } from "../api/sheetsApi";
+import * as FileSystem from "expo-file-system";
 
 function Header({ title, onBack }) {
   return (
@@ -32,6 +33,7 @@ const initial = {
   coste: "",
   responsable: "",
   photoLocalUris: [],
+  odometroLocalUri: "",
 };
 
 const OTRO_DEPARTAMENTO = "__OTRO__";
@@ -85,6 +87,18 @@ function sortMatriculas_(plates) {
   return list;
 }
 
+async function prepareImageUriForOcr_(sourceUri) {
+  const raw = String(sourceUri || "").trim();
+  if (!raw) return null;
+  let local = raw;
+  if (!raw.startsWith("file://")) {
+    const dest = `${FileSystem.cacheDirectory}ocr_odometro_${Date.now()}.jpg`;
+    await FileSystem.copyAsync({ from: raw, to: dest });
+    local = dest;
+  }
+  return local;
+}
+
 export default function MaintenanceFormScreen({ navigation }) {
   const { user, role } = React.useContext(AuthContext);
   const [form, setForm] = useState(initial);
@@ -102,6 +116,8 @@ export default function MaintenanceFormScreen({ navigation }) {
   ]);
   const [vehiclesData, setVehiclesData] = useState(() => localDb.getVehiclesMemory());
   const [saving, setSaving] = useState(false);
+  const [readingKm, setReadingKm] = useState(false);
+  const [lastOcrUri, setLastOcrUri] = useState("");
 
   useEffect(() => {
     async function loadVehicles() {
@@ -162,6 +178,43 @@ export default function MaintenanceFormScreen({ navigation }) {
 
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
+  const readKmFromPhoto = async (uri) => {
+    const photoUri = String(uri || "").trim();
+    if (!photoUri) return;
+    try {
+      setReadingKm(true);
+      const ocrUri = await prepareImageUriForOcr_(photoUri);
+      if (!ocrUri) return;
+      const extracted = await syncService.extractOdometerKmFromLocalUri(ocrUri);
+      const km = String(extracted?.km || "").trim();
+      if (!km) return;
+      set("kilometraje", km);
+      Alert.alert("KM detectados", `Lectura automática detectada: ${km} km`);
+    } catch (e) {
+      const detail = String(e?.message || "").trim();
+      Alert.alert(
+        "Lectura automática no disponible",
+        detail
+          ? `${detail}\n\nPuedes introducirlos manualmente.`
+          : "No se pudieron leer km de la foto. Puedes introducirlos manualmente."
+      );
+    } finally {
+      setReadingKm(false);
+    }
+  };
+
+  useEffect(() => {
+    const uri = String(form.odometroLocalUri || "").trim();
+    if (!uri) {
+      if (lastOcrUri) setLastOcrUri("");
+      return;
+    }
+    if (readingKm) return;
+    if (uri === lastOcrUri) return;
+    setLastOcrUri(uri);
+    readKmFromPhoto(uri);
+  }, [form.odometroLocalUri, readingKm, lastOcrUri]);
+
   const save = async () => {
     if (saving) return;
     setSaving(true);
@@ -174,6 +227,12 @@ export default function MaintenanceFormScreen({ navigation }) {
       if (!form.descripcion.trim()) return Alert.alert("Falta descripción", "La descripción es obligatoria.");
       if (!Array.isArray(form.photoLocalUris) || form.photoLocalUris.length === 0) {
         return Alert.alert("Falta factura/fotos", "Adjunta al menos una foto o ticket para el mantenimiento.");
+      }
+      if (readingKm) {
+        return Alert.alert("Lectura en curso", "Espera a que termine la lectura automática de km o introduce el kilometraje manualmente.");
+      }
+      if (!String(form.kilometraje || "").trim()) {
+        return Alert.alert("Falta kilometraje", "El kilometraje es obligatorio. Puedes introducirlo manualmente si el OCR no lo detecta.");
       }
       const departamento_o_proyecto =
         form.departamento_o_proyecto === OTRO_DEPARTAMENTO
@@ -237,7 +296,25 @@ export default function MaintenanceFormScreen({ navigation }) {
         ) : null}
         <TextField label="Taller / Proveedor" required value={form.taller} onChangeText={(v) => set("taller", v)} />
         <TextField label="Descripción" required value={form.descripcion} onChangeText={(v) => set("descripcion", v)} multiline />
-        <TextField label="Kilometraje" required={false} value={form.kilometraje} onChangeText={(v) => set("kilometraje", v)} keyboardType="number-pad" />
+        <ImageField
+          label="Foto cuentakilómetros"
+          required={false}
+          valueUri={form.odometroLocalUri}
+          onChangeUri={(uri) => set("odometroLocalUri", uri)}
+        />
+        {readingKm ? (
+          <View style={styles.ocrRow}>
+            <ActivityIndicator size="small" />
+            <Text style={styles.ocrText}>Leyendo km desde foto...</Text>
+          </View>
+        ) : null}
+        <TextField
+          label="Kilometraje"
+          required
+          value={form.kilometraje}
+          onChangeText={(v) => set("kilometraje", String(v || "").replace(/[^\d]/g, ""))}
+          keyboardType="number-pad"
+        />
         <TextField label="Coste" required={false} value={form.coste} onChangeText={(v) => set("coste", v)} keyboardType="decimal-pad" />
         <TextField label="Responsable" required={false} value={form.responsable} onChangeText={(v) => set("responsable", v)} />
         <ImageField label="Fotos" required multiple valueUris={form.photoLocalUris} onChangeUri={(arr) => set("photoLocalUris", arr)} />
@@ -257,6 +334,8 @@ const styles = StyleSheet.create({
   backBtn: { borderColor: "#4f88bf", borderWidth: 1, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 7, alignSelf: "center" },
   backText: { color: "#b7ddff", fontWeight: "800", fontSize: 12 },
   card: { backgroundColor: theme.colors.card, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: theme.colors.border, marginBottom: 12 },
+  ocrRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  ocrText: { color: theme.colors.subtext, fontSize: 12, fontWeight: "700" },
   saveBtn: { backgroundColor: theme.colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", borderWidth: 1, borderColor: "#5fb7ff" },
   saveText: { color: theme.colors.text, fontWeight: "900", fontSize: 16 },
 });

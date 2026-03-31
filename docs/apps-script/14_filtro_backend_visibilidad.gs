@@ -40,7 +40,6 @@ function normalizeRolSegunUsuarios_(email) {
   }
   return "OPERARIO";
 }
-
 function canViewAllByRole_(email) {
   return normalizeRolSegunUsuarios_(email) === "GESTOR";
 }

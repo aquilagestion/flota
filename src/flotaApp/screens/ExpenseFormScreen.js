@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
 import { localDb } from "../storage/localDb";
 import { syncService } from "../sync/syncService";
-import { EXPENSE_TYPES, FUEL_BRANDS, FUEL_TYPES, PARKING_ZONES } from "../domain/expenseSchema";
+import { EXPENSE_TYPES, FUEL_BRANDS, FUEL_TYPES, PARKING_ZONES, PAYMENT_METHODS } from "../domain/expenseSchema";
 import { theme } from "../ui/theme";
 import { DateField, SelectField, TextField, TimeField } from "../ui/form/Fields";
 import ImageField from "../ui/form/ImageField";
 import { sheetsApi } from "../api/sheetsApi";
+import * as FileSystem from "expo-file-system";
 
 function Header({ title, onBack }) {
   return (
@@ -25,6 +26,7 @@ const initial = {
   departamento_o_proyecto: "",
   departamento_o_proyecto_custom: "",
   tipo_gasto: "",
+  forma_pago: "",
   ticketLocalUris: [],
   compania: "",
   numero_poliza: "",
@@ -58,6 +60,7 @@ const initial = {
   fecha_proximo_mantenimiento: "",
   kilometros_proximo_mantenimiento: "",
   fecha_repostaje: "",
+  entidad_combustible: "",
   lugar_repostaje: "",
   marca_combustible: "",
   tipo_combustible: "",
@@ -70,11 +73,13 @@ const initial = {
   total_a_pagar: "",
   numero_ticket: "",
   fecha_aparcamiento: "",
+  entidad_parking: "",
   tipo_zona: "",
   hora_inicio_aparcamiento: "",
   hora_fin_aparcamiento: "",
   importe_aparcamiento: "",
   fecha_peaje: "",
+  entidad_peaje: "",
   entrada_peaje: "",
   salida_peaje: "",
   importe_peaje: "",
@@ -82,11 +87,15 @@ const initial = {
   fecha_inspeccion: "",
   fecha_proxima_inspeccion: "",
   importe_itv: "",
+  numero_factura_itv: "",
   fecha_otros_gastos: "",
   proveedor_otros_gastos: "",
   concepto_otros_gastos: "",
   importe_otros_gastos: "",
+  numero_factura_otros: "",
   observaciones: "",
+  kilometros_actuales: "",
+  odometroLocalUri: "",
 };
 
 const OTRO_DEPARTAMENTO = "__OTRO__";
@@ -155,6 +164,49 @@ function sortMatriculas_(plates) {
   return list;
 }
 
+function extractKmFromOcrText_(text) {
+  const raw = String(text || "");
+  if (!raw) return "";
+  const normalized = raw
+    .toUpperCase()
+    .replace(/[OQ]/g, "0")
+    .replace(/[I|L]/g, "1");
+  const lines = normalized.split(/\r?\n/);
+  const candidates = [];
+  const collect = (source) => {
+    const re = /(\d{1,3}(?:[.,\s]\d{3})+|\d{4,7})/g;
+    let m = null;
+    while ((m = re.exec(source)) !== null) {
+      const digits = String(m[1] || "").replace(/[^\d]/g, "");
+      if (digits.length < 4 || digits.length > 7) continue;
+      const n = parseInt(digits, 10);
+      if (Number.isFinite(n)) candidates.push(n);
+    }
+  };
+  for (const ln of lines) {
+    if (/(KM|KMS|KILOMET|ODOMET)/.test(String(ln || ""))) {
+      collect(String(ln || ""));
+    }
+  }
+  if (!candidates.length) collect(normalized);
+  if (!candidates.length) return "";
+  candidates.sort((a, b) => b - a);
+  return String(candidates[0]);
+}
+
+/** Normaliza URI a file:// para envío al OCR remoto (PaddleOCR/OpenCV). */
+async function prepareImageUriForOcr_(sourceUri) {
+  const raw = String(sourceUri || "").trim();
+  if (!raw) return null;
+  let local = raw;
+  if (!raw.startsWith("file://")) {
+    const dest = `${FileSystem.cacheDirectory}ocr_odometro_${Date.now()}.jpg`;
+    await FileSystem.copyAsync({ from: raw, to: dest });
+    local = dest;
+  }
+  return local;
+}
+
 function requiredMissing(state) {
   const errs = [];
   if (!state.matricula.trim()) errs.push("MATRICULA");
@@ -166,6 +218,7 @@ function requiredMissing(state) {
     }
   }
   if (!state.tipo_gasto) errs.push("TIPO DE GASTO");
+  if (!state.forma_pago) errs.push("FORMA DE PAGO");
   if (!Array.isArray(state.ticketLocalUris) || state.ticketLocalUris.length === 0) {
     errs.push("IMAGEN / TICKET (OBLIGATORIO)");
   }
@@ -204,13 +257,14 @@ function requiredMissing(state) {
       if (!state.importe_mantenimiento) errs.push("IMPORTE MANTENIMIENTO / REPARACIONES");
       if (!state.fecha_proximo_mantenimiento) errs.push("FECHA PROXIMO MANTENIMIENTO / REPARACIONES");
       if (!state.kilometros_proximo_mantenimiento) errs.push("KILOMETROS PROXIMO MANTENIMIENTO / REPARACIONES");
+      if (!state.kilometros_actuales) errs.push("KILOMETROS ACTUALES");
       break;
     case "COMBUSTIBLES":
       if (!state.fecha_repostaje) errs.push("FECHA REPOSTAJE");
-      if (!state.lugar_repostaje.trim()) errs.push("LUGAR REPOSTAJE");
-      if (!state.marca_combustible) errs.push("MARCA");
+      if (!state.entidad_combustible.trim()) errs.push("ENTIDAD");
       if (!state.tipo_combustible) errs.push("TIPO COMBUSTIBLE");
       if (!state.kilometros_repostaje) errs.push("KILOMETROS REPOSTAJE");
+      if (!state.kilometros_actuales) errs.push("KILOMETROS ACTUALES");
       if (!state.tipo_repostaje) errs.push("TIPO REPOSTAJE");
       if (!state.litros_repostados) errs.push("LITROS REPOSTADOS");
       if (!state.precio_por_litro) errs.push("PRECIO / LITRO");
@@ -219,6 +273,7 @@ function requiredMissing(state) {
       break;
     case "PARKING":
       if (!state.fecha_aparcamiento) errs.push("FECHA APARCAMIENTO");
+      if (!state.entidad_parking.trim()) errs.push("ENTIDAD");
       if (!state.tipo_zona) errs.push("TIPO ZONA");
       if (!state.hora_inicio_aparcamiento) errs.push("HORA INICIO APARCAMIENTO");
       if (!state.hora_fin_aparcamiento) errs.push("HORA FIN APARCAMIENTO");
@@ -226,6 +281,7 @@ function requiredMissing(state) {
       break;
     case "PEAJES":
       if (!state.fecha_peaje) errs.push("FECHA PEAJE");
+      if (!state.entidad_peaje.trim()) errs.push("ENTIDAD");
       if (!state.importe_peaje) errs.push("IMPORTE PEAJE");
       break;
     case "ITV":
@@ -233,12 +289,15 @@ function requiredMissing(state) {
       if (!state.fecha_inspeccion) errs.push("FECHA INSPECCIÓN");
       if (!state.fecha_proxima_inspeccion) errs.push("FECHA PROXIMA INSPECCIÓN");
       if (!state.importe_itv) errs.push("IMPORTE ITV");
+      if (!state.numero_factura_itv.trim()) errs.push("Nº FACTURA ITV");
+      if (!state.kilometros_actuales) errs.push("KILOMETROS ACTUALES");
       break;
     case "OTROS":
       if (!state.fecha_otros_gastos) errs.push("FECHA OTROS GASTOS");
       if (!state.proveedor_otros_gastos.trim()) errs.push("PROVEEDOR OTROS GASTOS");
       if (!state.concepto_otros_gastos.trim()) errs.push("CONCEPTO OTROS GASTOS");
       if (!state.importe_otros_gastos) errs.push("IMPORTE OTROS GASTOS");
+      if (!state.numero_factura_otros.trim()) errs.push("Nº FACTURA OTROS GASTOS");
       break;
     case "MULTAS_SANCIONES":
       if (!state.fecha_multa) errs.push("FECHA MULTA");
@@ -267,11 +326,24 @@ export default function ExpenseFormScreen({ navigation }) {
   );
   const [autosaveMsg, setAutosaveMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editExpenseId, setEditExpenseId] = useState("");
+  const [readingKm, setReadingKm] = useState(false);
+  const [lastOcrUri, setLastOcrUri] = useState("");
+  const kmPhotoRequired = useMemo(
+    () => ["COMBUSTIBLES", "MANTENIMIENTO_REPARACIONES", "ITV"].includes(String(form.tipo_gasto || "")),
+    [form.tipo_gasto]
+  );
 
   useEffect(() => {
     async function loadVehicles() {
       const draft = await localDb.getExpensesDraft();
-      if (draft) setForm((p) => ({ ...p, ...draft }));
+      if (draft) {
+        const nextDraft = { ...draft };
+        const eid = String(nextDraft?._editExpenseId || "").trim();
+        if (eid) setEditExpenseId(eid);
+        delete nextDraft._editExpenseId;
+        setForm((p) => ({ ...p, ...nextDraft }));
+      }
       const cached = await localDb.getVehicles();
       if (cached.length) {
         const normalized = cached
@@ -334,7 +406,77 @@ export default function ExpenseFormScreen({ navigation }) {
     }));
   }, [form.matricula, vehiclesData, form.departamento_o_proyecto]);
 
+  useEffect(() => {
+    if (form.tipo_gasto !== "COMBUSTIBLES") return;
+    const kmActual = String(form.kilometros_actuales || "").trim();
+    const kmRepostaje = String(form.kilometros_repostaje || "").trim();
+    if (!kmActual || kmRepostaje) return;
+    setForm((p) => ({ ...p, kilometros_repostaje: kmActual }));
+  }, [form.tipo_gasto, form.kilometros_actuales, form.kilometros_repostaje]);
+
+  useEffect(() => {
+    if (form.tipo_gasto !== "COMBUSTIBLES") return;
+    const parseDecimal = (v) => {
+      const n = parseFloat(String(v || "").replace(",", "."));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const litros = parseDecimal(form.litros_repostados);
+    const precio = parseDecimal(form.precio_por_litro);
+    const descuento = parseDecimal(form.descuento);
+    if (!litros || !precio) {
+      if (String(form.total_a_pagar || "").trim()) set("total_a_pagar", "");
+      return;
+    }
+    const total = Math.max(0, litros * precio - descuento);
+    const next = total.toFixed(2);
+    if (String(form.total_a_pagar || "") !== next) {
+      set("total_a_pagar", next);
+    }
+  }, [form.tipo_gasto, form.litros_repostados, form.precio_por_litro, form.descuento]);
+
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const readKmFromPhoto = async (uri) => {
+    const photoUri = String(uri || "").trim();
+    if (!photoUri) return;
+    try {
+      setReadingKm(true);
+      const ocrUri = await prepareImageUriForOcr_(photoUri);
+      if (!ocrUri) return;
+      const extracted = await syncService.extractOdometerKmFromLocalUri(ocrUri);
+      const km = String(extracted?.km || "").trim();
+      if (!km) return;
+      setForm((p) => ({
+        ...p,
+        kilometros_actuales: km,
+        kilometros_repostaje: p.tipo_gasto === "COMBUSTIBLES" ? km : p.kilometros_repostaje,
+      }));
+      Alert.alert("KM detectados", `Lectura automática detectada: ${km} km`);
+    } catch (e) {
+      const detail = String(e?.message || "").trim();
+      Alert.alert(
+        "Lectura automática no disponible",
+        detail
+          ? `${detail}\n\nPuedes introducirlos manualmente.`
+          : "No se pudieron leer km de la foto. Puedes introducirlos manualmente."
+      );
+    } finally {
+      setReadingKm(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!kmPhotoRequired) return;
+    const uri = String(form.odometroLocalUri || "").trim();
+    if (!uri) {
+      if (lastOcrUri) setLastOcrUri("");
+      return;
+    }
+    if (readingKm) return;
+    if (uri === lastOcrUri) return;
+    setLastOcrUri(uri);
+    readKmFromPhoto(uri);
+  }, [kmPhotoRequired, form.odometroLocalUri, readingKm, lastOcrUri]);
 
   const vehicleSelectOptions = useMemo(
     () => vehicleOptions.map((m) => ({ value: m, label: m })),
@@ -345,6 +487,13 @@ export default function ExpenseFormScreen({ navigation }) {
     if (saving) return;
     setSaving(true);
     try {
+      if (kmPhotoRequired && readingKm) {
+        Alert.alert(
+          "Lectura en curso",
+          "Espera a que termine la lectura automática de km o introduce los km manualmente."
+        );
+        return;
+      }
       const missing = requiredMissing(form);
       if (missing.length) {
         Alert.alert("Faltan datos obligatorios", missing.join("\n"));
@@ -360,7 +509,10 @@ export default function ExpenseFormScreen({ navigation }) {
         return;
       }
 
+      const localId = editExpenseId || `${Date.now()}`;
       const payload = {
+        local_id: localId,
+        id_gasto: localId,
         vehiclePlate: form.matricula.trim().toUpperCase(),
         tipo_gasto: form.tipo_gasto,
         ...form,
@@ -376,6 +528,8 @@ export default function ExpenseFormScreen({ navigation }) {
         organismo_denunciante: String(form.organismo_denunciante || "").trim(),
         tipo_infraccion: String(form.tipo_infraccion || "").trim(),
         importe: String(form.importe_multa || "").trim(),
+        kilometros_actuales: String(form.kilometros_actuales || "").trim(),
+        odometro_local_uri: String(form.odometroLocalUri || "").trim(),
         responsable_email: String(user?.email || "").trim().toLowerCase(),
         departamento_o_proyecto, // sobrescribe el valor "__OTRO__" si aplica
         usuario_uid: user?.uid || "",
@@ -384,12 +538,42 @@ export default function ExpenseFormScreen({ navigation }) {
         createdAtLocal: new Date().toISOString(),
       };
       const localList = await localDb.getExpenses();
-      await localDb.setExpenses([{ id: `${Date.now()}`, ...payload }, ...localList]);
-      await syncService.queue({ kind: "expense", payload });
+      if (editExpenseId) {
+        const nextList = localList.map((x) => {
+          const xid = String(x?.id || x?.local_id || "").trim();
+          if (xid !== editExpenseId) return x;
+          return { id: editExpenseId, ...x, ...payload };
+        });
+        await localDb.setExpenses(nextList);
+
+        // Si el gasto aún está en outbox, actualizamos ese job para no duplicar envíos.
+        const outbox = await localDb.getOutbox();
+        let touched = false;
+        const nextOutbox = outbox.map((job) => {
+          if (job?.kind !== "expense") return job;
+          const jLocalId = String(job?.payload?.local_id || "").trim();
+          if (jLocalId && jLocalId === editExpenseId) {
+            touched = true;
+            return { ...job, payload: { ...job.payload, ...payload } };
+          }
+          return job;
+        });
+        if (touched) await localDb.setOutbox(nextOutbox);
+      } else {
+        await localDb.setExpenses([{ id: payload.local_id, ...payload }, ...localList]);
+        await syncService.queue({ kind: "expense", payload });
+      }
       // No bloqueamos la UI esperando subida de adjuntos: sincronización en segundo plano.
       syncService.flushIfOnline().catch(() => {});
-      Alert.alert("Guardado", "Registro guardado. La sincronización de adjuntos continúa en segundo plano.");
+      Alert.alert(
+        "Guardado",
+        editExpenseId
+          ? "Gasto actualizado. Si estaba pendiente de sincronizar, se ha actualizado también en la cola."
+          : "Registro guardado. La sincronización de adjuntos continúa en segundo plano."
+      );
+      setEditExpenseId("");
       setForm(initial);
+      await localDb.setExpensesDraft(null);
     } catch (e) {
       Alert.alert("Error al guardar", e?.message || "Error inesperado");
     } finally {
@@ -423,6 +607,13 @@ export default function ExpenseFormScreen({ navigation }) {
 
         <Text style={styles.sectionTitle}>GASTOS</Text>
         <SelectField label="TIPO DE GASTO" required value={form.tipo_gasto} onChange={(v) => set("tipo_gasto", normalizeExpenseType_(v))} options={expenseTypeOptions} />
+        <SelectField
+          label="FORMA DE PAGO"
+          required
+          value={form.forma_pago}
+          onChange={(v) => set("forma_pago", v)}
+          options={PAYMENT_METHODS.map((m) => ({ value: m, label: m }))}
+        />
 
         <ImageField
           label="Imagen ticket"
@@ -431,6 +622,30 @@ export default function ExpenseFormScreen({ navigation }) {
           valueUris={form.ticketLocalUris}
           onChangeUri={(arr) => set("ticketLocalUris", arr)}
         />
+        {kmPhotoRequired ? (
+          <>
+            <ImageField
+              label="Foto cuentakilómetros"
+              required={false}
+              valueUri={form.odometroLocalUri}
+              onChangeUri={(uri) => set("odometroLocalUri", uri)}
+            />
+            {readingKm ? (
+              <View style={styles.ocrRow}>
+                <ActivityIndicator size="small" />
+                <Text style={styles.ocrText}>Leyendo km desde foto...</Text>
+              </View>
+            ) : null}
+            <TextField
+              label="KILÓMETROS ACTUALES"
+              required
+              value={form.kilometros_actuales}
+              onChangeText={(v) => set("kilometros_actuales", String(v || "").replace(/[^\d]/g, ""))}
+              keyboardType="number-pad"
+              placeholder="Lectura actual del cuentakm"
+            />
+          </>
+        ) : null}
         {autosaveMsg ? <Text style={styles.autosave}>{autosaveMsg}</Text> : null}
       </View>
 
@@ -492,8 +707,9 @@ export default function ExpenseFormScreen({ navigation }) {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>COMBUSTIBLE</Text>
           <DateField label="FECHA REPOSTAJE" required value={form.fecha_repostaje} onChange={(v) => set("fecha_repostaje", v)} />
-          <TextField label="LUGAR REPOSTAJE" required value={form.lugar_repostaje} onChangeText={(v) => set("lugar_repostaje", v)} />
-          <SelectField label="MARCA" required value={form.marca_combustible} onChange={(v) => set("marca_combustible", v)} options={FUEL_BRANDS.map((b) => ({ value: b, label: b }))} />
+          <TextField label="ENTIDAD" required value={form.entidad_combustible} onChangeText={(v) => set("entidad_combustible", v)} />
+          <TextField label="LUGAR REPOSTAJE" required={false} value={form.lugar_repostaje} onChangeText={(v) => set("lugar_repostaje", v)} />
+          <SelectField label="MARCA" required={false} value={form.marca_combustible} onChange={(v) => set("marca_combustible", v)} options={FUEL_BRANDS.map((b) => ({ value: b, label: b }))} />
           <SelectField label="TIPO COMBUSTIBLE" required value={form.tipo_combustible} onChange={(v) => set("tipo_combustible", v)} options={FUEL_TYPES.map((t) => ({ value: t, label: t }))} />
           <TextField label="KILOMETROS REPOSTAJE" required value={form.kilometros_repostaje} onChangeText={(v) => set("kilometros_repostaje", v)} keyboardType="number-pad" />
           <SelectField label="TIPO REPOSTAJE" required value={form.tipo_repostaje} onChange={(v) => set("tipo_repostaje", v)} options={[{ value: "PARCIAL", label: "PARCIAL" }, { value: "COMPLETO", label: "COMPLETO" }]} />
@@ -501,7 +717,7 @@ export default function ExpenseFormScreen({ navigation }) {
           <TextField label="PRECIO / LITRO" required value={form.precio_por_litro} onChangeText={(v) => set("precio_por_litro", v)} keyboardType="decimal-pad" />
           <TextField label="DESCUENTO" required={false} value={form.descuento} onChangeText={(v) => set("descuento", v)} keyboardType="decimal-pad" />
           <TextField label="PUNTOS OBTENIDOS" required={false} value={form.puntos_obtenidos} onChangeText={(v) => set("puntos_obtenidos", v)} keyboardType="decimal-pad" />
-          <TextField label="TOTAL A PAGAR" required value={form.total_a_pagar} onChangeText={(v) => set("total_a_pagar", v)} keyboardType="decimal-pad" />
+          <TextField label="TOTAL A PAGAR (AUTO)" required value={form.total_a_pagar} onChangeText={() => {}} keyboardType="decimal-pad" editable={false} />
           <TextField label="Nº FACTURA / TICKET" required value={form.numero_ticket} onChangeText={(v) => set("numero_ticket", v)} />
         </View>
       ) : null}
@@ -510,6 +726,7 @@ export default function ExpenseFormScreen({ navigation }) {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>APARCAMIENTO</Text>
           <DateField label="FECHA APARCAMIENTO" required value={form.fecha_aparcamiento} onChange={(v) => set("fecha_aparcamiento", v)} />
+          <TextField label="ENTIDAD" required value={form.entidad_parking} onChangeText={(v) => set("entidad_parking", v)} />
           <SelectField label="TIPO ZONA" required value={form.tipo_zona} onChange={(v) => set("tipo_zona", v)} options={PARKING_ZONES.map((z) => ({ value: z, label: z }))} />
           <TimeField label="HORA INICIO APARCAMIENTO" required value={form.hora_inicio_aparcamiento} onChange={(v) => set("hora_inicio_aparcamiento", v)} />
           <TimeField label="HORA FIN APARCAMIENTO" required value={form.hora_fin_aparcamiento} onChange={(v) => set("hora_fin_aparcamiento", v)} />
@@ -521,6 +738,7 @@ export default function ExpenseFormScreen({ navigation }) {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>PEAJES</Text>
           <DateField label="FECHA PEAJE" required value={form.fecha_peaje} onChange={(v) => set("fecha_peaje", v)} />
+          <TextField label="ENTIDAD" required value={form.entidad_peaje} onChangeText={(v) => set("entidad_peaje", v)} />
           <TextField label="ENTRADA PEAJE" required={false} value={form.entrada_peaje} onChangeText={(v) => set("entrada_peaje", v)} />
           <TextField label="SALIDA PEAJE" required={false} value={form.salida_peaje} onChangeText={(v) => set("salida_peaje", v)} />
           <TextField label="IMPORTE PEAJE" required value={form.importe_peaje} onChangeText={(v) => set("importe_peaje", v)} keyboardType="decimal-pad" />
@@ -533,6 +751,7 @@ export default function ExpenseFormScreen({ navigation }) {
           <TextField label="ESTACION ITV" required value={form.estacion_itv} onChangeText={(v) => set("estacion_itv", v)} />
           <DateField label="FECHA INSPECCIÓN" required value={form.fecha_inspeccion} onChange={(v) => set("fecha_inspeccion", v)} />
           <DateField label="FECHA PROXIMA INSPECCIÓN" required value={form.fecha_proxima_inspeccion} onChange={(v) => set("fecha_proxima_inspeccion", v)} />
+          <TextField label="Nº FACTURA ITV" required value={form.numero_factura_itv} onChangeText={(v) => set("numero_factura_itv", v)} />
           <TextField label="IMPORTE ITV" required value={form.importe_itv} onChangeText={(v) => set("importe_itv", v)} keyboardType="decimal-pad" />
         </View>
       ) : null}
@@ -543,6 +762,7 @@ export default function ExpenseFormScreen({ navigation }) {
           <DateField label="FECHA OTROS GASTOS" required value={form.fecha_otros_gastos} onChange={(v) => set("fecha_otros_gastos", v)} />
           <TextField label="PROVEEDOR OTROS GASTOS" required value={form.proveedor_otros_gastos} onChangeText={(v) => set("proveedor_otros_gastos", v)} />
           <TextField label="CONCEPTO OTROS GASTOS" required value={form.concepto_otros_gastos} onChangeText={(v) => set("concepto_otros_gastos", v)} />
+          <TextField label="Nº FACTURA OTROS GASTOS" required value={form.numero_factura_otros} onChangeText={(v) => set("numero_factura_otros", v)} />
           <TextField label="IMPORTE OTROS GASTOS" required value={form.importe_otros_gastos} onChangeText={(v) => set("importe_otros_gastos", v)} keyboardType="decimal-pad" />
           <TextField label="OBSERVACIONES / ANOTACIONES" required={false} value={form.observaciones} onChangeText={(v) => set("observaciones", v)} multiline />
         </View>
@@ -561,7 +781,9 @@ export default function ExpenseFormScreen({ navigation }) {
       ) : null}
 
       <Pressable style={[styles.saveBtn, saving && { opacity: 0.75 }]} onPress={save} disabled={saving}>
-        <Text style={styles.saveText}>{saving ? "Guardando…" : "Guardar gasto"}</Text>
+        <Text style={styles.saveText}>
+          {saving ? "Guardando…" : editExpenseId ? "Actualizar gasto" : "Guardar gasto"}
+        </Text>
       </Pressable>
     </ScrollView>
   );
@@ -577,6 +799,8 @@ const styles = StyleSheet.create({
   card: { backgroundColor: theme.colors.card, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: theme.colors.border, marginBottom: 12 },
   sectionTitle: { color: theme.colors.text, fontWeight: "900", fontSize: 16, marginBottom: 8 },
   autosave: { color: theme.colors.subtext, fontSize: 12, marginTop: 4 },
+  ocrRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: -4, marginBottom: 8 },
+  ocrText: { color: theme.colors.subtext, fontSize: 12 },
   saveBtn: { backgroundColor: theme.colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", borderWidth: 1, borderColor: "#5fb7ff" },
   saveText: { color: theme.colors.text, fontWeight: "900", fontSize: 16 },
 });

@@ -41,7 +41,9 @@ export const FUEL_BRANDS = [
   "OTRO",
 ];
 
-export const FUEL_TYPES = ["GASOLEO", "GASOLEO MEJORADO", "GASOLINA 95", "GASOLINA 98", "ECODIESEL"];
+export const FUEL_TYPES = ["GASOLEO", "GASOLEO MEJORADO", "GASOLINA 95", "GASOLINA 98", "ECODIESEL", "Adblue"];
 
 export const PARKING_ZONES = ["AZUL", "VERDE", "NARANJA", "ROJA", "PARKING PRIVADO"];
+
+export const PAYMENT_METHODS = ["Usuario", "Transferencia", "Tarjeta Grefa"];
 

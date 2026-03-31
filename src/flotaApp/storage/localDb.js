@@ -8,6 +8,7 @@ const KEYS = {
   vehicles: "@flota:vehicles:v2",
   expenses: "@flota:expenses:v2",
   maint: "@flota:maint:v2",
+  expenseSheets: "@flota:expenseSheets:v1",
   outbox: "@flota:outbox:v1",
   expensesDraft: "@flota:expensesDraft:v1",
   syncTargets: "@flota:syncTargets:v1",
@@ -62,6 +63,12 @@ export const localDb = {
   },
   async setMaintenances(list) {
     await setJson(KEYS.maint, list);
+  },
+  async getExpenseSheets() {
+    return await getJson(KEYS.expenseSheets, []);
+  },
+  async setExpenseSheets(list) {
+    await setJson(KEYS.expenseSheets, list);
   },
   async getOutbox() {
     return await getJson(KEYS.outbox, []);

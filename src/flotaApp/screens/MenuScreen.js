@@ -4,7 +4,7 @@ import { AuthContext } from "../auth/AuthContext";
 import { theme } from "../ui/theme";
 import { sheetsApi } from "../api/sheetsApi";
 import { localDb } from "../storage/localDb";
-import { canApproveRequests, isGestor, isResponsable, roleLabel } from "../auth/roles";
+import { canApproveExpenseSheets, canApproveRequests, isGestor, isResponsable, roleLabel } from "../auth/roles";
 import { syncService } from "../sync/syncService";
 
 function MenuCard({ title, subtitle, onPress }) {
@@ -21,6 +21,7 @@ export default function MenuScreen({ navigation }) {
   const gestor = isGestor(role);
   const responsable = isResponsable(role);
   const canApprove = canApproveRequests(role);
+  const canApproveSheets = canApproveExpenseSheets(role);
   const [outboxCount, setOutboxCount] = useState(0);
   const [lastSyncError, setLastSyncError] = useState("");
   const [currentPwd, setCurrentPwd] = useState("");
@@ -139,6 +140,18 @@ export default function MenuScreen({ navigation }) {
         }
         onPress={() => navigation.navigate("Historial")}
       />
+      <MenuCard
+        title="Hojas de gasto"
+        subtitle="Agrupa gastos pagados por usuario y envía la hoja para reembolso."
+        onPress={() => navigation.navigate("HojasGasto")}
+      />
+      {canApproveSheets ? (
+        <MenuCard
+          title="Aprobaciones"
+          subtitle="Listado de hojas de gasto para revisar y gestionar pago."
+          onPress={() => navigation.navigate("Aprobaciones")}
+        />
+      ) : null}
       {canApprove ? (
         <MenuCard
           title="Solicitudes de uso"

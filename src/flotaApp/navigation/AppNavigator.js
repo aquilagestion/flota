@@ -11,6 +11,8 @@ import HistoryScreen from "../screens/HistoryScreen";
 import DestinationsScreen from "../screens/DestinationsScreen";
 import UsersAdminScreen from "../screens/UsersAdminScreen";
 import RequestsScreen from "../screens/RequestsScreen";
+import ExpenseSheetsScreen from "../screens/ExpenseSheetsScreen";
+import ApprovalsScreen from "../screens/ApprovalsScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -39,9 +41,11 @@ export default function AppNavigator() {
           <Stack.Screen name="Gasto" component={ExpenseFormScreen} />
           <Stack.Screen name="Mantenimiento" component={MaintenanceFormScreen} />
           <Stack.Screen name="Historial" component={HistoryScreen} />
+          <Stack.Screen name="HojasGasto" component={ExpenseSheetsScreen} />
           <Stack.Screen name="Destinos" component={DestinationsScreen} />
           <Stack.Screen name="Usuarios" component={UsersAdminScreen} />
           <Stack.Screen name="Solicitudes" component={RequestsScreen} />
+          <Stack.Screen name="Aprobaciones" component={ApprovalsScreen} />
         </>
       )}
     </Stack.Navigator>

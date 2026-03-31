@@ -37,6 +37,34 @@ function parseItem_(x) {
   };
 }
 
+function parseDateFlexible_(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const d = new Date(`${raw}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const dmy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmy) {
+    const dd = dmy[1].padStart(2, "0");
+    const mm = dmy[2].padStart(2, "0");
+    const yyyy = dmy[3];
+    const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function rangesOverlap_(aStart, aEnd, bStart, bEnd) {
+  const a0 = aStart?.getTime?.();
+  const a1 = (aEnd || aStart)?.getTime?.();
+  const b0 = bStart?.getTime?.();
+  const b1 = (bEnd || bStart)?.getTime?.();
+  if (![a0, a1, b0, b1].every((n) => typeof n === "number" && !Number.isNaN(n))) return false;
+  return a0 <= b1 && b0 <= a1;
+}
+
 export default function RequestsScreen({ navigation }) {
   const { user, role } = React.useContext(AuthContext);
   const allowed = canApproveRequests(role);
@@ -116,6 +144,32 @@ export default function RequestsScreen({ navigation }) {
       }
     }
     try {
+      if (estado === "APROBADA") {
+        const approvedRes = await sheetsApi.get("solicitud_list", {
+          estado: "APROBADA",
+          trabajador_email: "",
+          user_email: user?.email || "",
+        });
+        const approvedRows = Array.isArray(approvedRes?.data) ? approvedRes.data : Array.isArray(approvedRes) ? approvedRes : [];
+        const currentMat = String(item?.matricula || "").trim().toUpperCase();
+        const itemStart = parseDateFlexible_(item?.fecha_desde);
+        const itemEnd = parseDateFlexible_(item?.fecha_hasta);
+        const conflict = approvedRows
+          .map(parseItem_)
+          .find((x) => {
+            if (String(x?.id_solicitud || "") === String(item?.id_solicitud || "")) return false;
+            if (String(x?.matricula || "").trim().toUpperCase() !== currentMat) return false;
+            return rangesOverlap_(itemStart, itemEnd, parseDateFlexible_(x?.fecha_desde), parseDateFlexible_(x?.fecha_hasta));
+          });
+        if (conflict) {
+          Alert.alert(
+            "Solape detectado",
+            `Ya existe una solicitud APROBADA para ${currentMat} en ese rango (${conflict.fecha_desde || "-"} → ${conflict.fecha_hasta || "-"})`
+          );
+          return;
+        }
+      }
+
       await sheetsApi.post(
         "solicitud_resolver",
         {
