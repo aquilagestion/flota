@@ -2,6 +2,9 @@ export const env = {
   apiUrl: process.env.EXPO_PUBLIC_API_URL,
   apiSecret: process.env.EXPO_PUBLIC_API_SECRET,
   appEnv: process.env.EXPO_PUBLIC_ENV,
+  useFirebase: String(process.env.EXPO_PUBLIC_USE_FIREBASE || "false")
+    .trim()
+    .toLowerCase() === "true",
   firebase: {
     apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
     authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,

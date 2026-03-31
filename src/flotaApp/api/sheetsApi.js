@@ -1,5 +1,7 @@
 import { env } from "../config/env";
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 function assertApiUrl_() {
   const base = String(env.apiUrl || "").trim();
   if (!base) {
@@ -23,12 +25,38 @@ async function readJson_(res) {
   }
 }
 
+async function fetchWithTimeout_(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  let timer = null;
+  try {
+    const fetchPromise = fetch(url, { ...(options || {}), signal: controller.signal });
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+          // silent
+        }
+        reject(new Error("Timeout de conexión con el servidor Sheets."));
+      }, timeoutMs);
+    });
+    return await Promise.race([fetchPromise, timeoutPromise]);
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error("Timeout de conexión con el servidor Sheets.");
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export const sheetsApi = {
   async get(action, params = {}) {
     const base = assertApiUrl_();
     const qs = new URLSearchParams({ action, ...params });
     const url = `${base}?${qs.toString()}`;
-    const res = await fetch(url, { method: "GET" });
+    const res = await fetchWithTimeout_(url, { method: "GET" });
     const json = await readJson_(res);
     if (!res.ok || (json && json.status === "error")) {
       const msg = json?.message || `HTTP ${res.status}`;
@@ -47,7 +75,7 @@ export const sheetsApi = {
       ...(meta?.user_email ? { user_email: String(meta.user_email).trim().toLowerCase() } : {}),
       ...(payload || {}),
     };
-    const res = await fetch(base, {
+    const res = await fetchWithTimeout_(base, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

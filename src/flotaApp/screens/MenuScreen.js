@@ -1,5 +1,5 @@
 import React, { useContext, useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
 import { theme } from "../ui/theme";
 import { sheetsApi } from "../api/sheetsApi";
@@ -17,12 +17,16 @@ function MenuCard({ title, subtitle, onPress }) {
 }
 
 export default function MenuScreen({ navigation }) {
-  const { logout, role, user } = useContext(AuthContext);
+  const { logout, role, user, changePassword } = useContext(AuthContext);
   const gestor = isGestor(role);
   const responsable = isResponsable(role);
   const canApprove = canApproveRequests(role);
   const [outboxCount, setOutboxCount] = useState(0);
   const [lastSyncError, setLastSyncError] = useState("");
+  const [currentPwd, setCurrentPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [newPwd2, setNewPwd2] = useState("");
+  const [pwdBusy, setPwdBusy] = useState(false);
 
   async function refreshOutboxState_() {
     const outbox = await localDb.getOutbox();
@@ -72,6 +76,38 @@ export default function MenuScreen({ navigation }) {
     }
   };
 
+  const handleChangePassword = async () => {
+    if (!currentPwd || !newPwd || !newPwd2) {
+      Alert.alert("Datos incompletos", "Debes completar los 3 campos de contraseña.");
+      return;
+    }
+    if (newPwd.length < 6) {
+      Alert.alert("Contraseña inválida", "La nueva contraseña debe tener al menos 6 caracteres.");
+      return;
+    }
+    if (newPwd !== newPwd2) {
+      Alert.alert("No coincide", "La confirmación no coincide con la nueva contraseña.");
+      return;
+    }
+    if (currentPwd === newPwd) {
+      Alert.alert("Sin cambios", "La nueva contraseña debe ser diferente a la actual.");
+      return;
+    }
+
+    try {
+      setPwdBusy(true);
+      await changePassword(currentPwd, newPwd);
+      setCurrentPwd("");
+      setNewPwd("");
+      setNewPwd2("");
+      Alert.alert("Contraseña actualizada", "La nueva contraseña ya se guardó en USUARIOS.");
+    } catch (e) {
+      Alert.alert("No se pudo cambiar", e?.message || "Error inesperado al cambiar la contraseña.");
+    } finally {
+      setPwdBusy(false);
+    }
+  };
+
   return (
     <ScrollView style={styles.safe} contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -117,16 +153,50 @@ export default function MenuScreen({ navigation }) {
           onPress={() => navigation.navigate("Usuarios")}
         />
       ) : null}
-      <MenuCard
-        title="Destinos corporativos"
-        subtitle={gestor ? "Carpeta Drive/Sheet por defecto y destino personal opcional." : "Consulta de destinos configurados por administración."}
-        onPress={() => navigation.navigate("Destinos")}
-      />
+      {gestor ? (
+        <MenuCard
+          title="Destinos corporativos"
+          subtitle="Carpeta Drive/Sheet por defecto y destino personal opcional."
+          onPress={() => navigation.navigate("Destinos")}
+        />
+      ) : null}
       <MenuCard
         title={`Sincronizar pendientes (${outboxCount})`}
         subtitle={lastSyncError ? `Último error: ${lastSyncError}` : "Forzar envío de registros locales al Sheet."}
         onPress={syncNow}
       />
+
+      <View style={styles.menuCard}>
+        <Text style={styles.menuTitle}>Cambiar contraseña</Text>
+        <Text style={styles.menuSubtitle}>Actualiza tu contraseña en cualquier momento. Se guardará en USUARIOS.</Text>
+        <TextInput
+          style={[styles.input, { marginTop: 10 }]}
+          secureTextEntry
+          placeholder="Contraseña actual"
+          placeholderTextColor={theme.colors.placeholder}
+          value={currentPwd}
+          onChangeText={setCurrentPwd}
+        />
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          placeholder="Nueva contraseña"
+          placeholderTextColor={theme.colors.placeholder}
+          value={newPwd}
+          onChangeText={setNewPwd}
+        />
+        <TextInput
+          style={styles.input}
+          secureTextEntry
+          placeholder="Confirmar nueva contraseña"
+          placeholderTextColor={theme.colors.placeholder}
+          value={newPwd2}
+          onChangeText={setNewPwd2}
+        />
+        <Pressable style={[styles.button, pwdBusy && styles.buttonDisabled]} onPress={handleChangePassword} disabled={pwdBusy}>
+          <Text style={styles.buttonText}>{pwdBusy ? "Actualizando..." : "Guardar nueva contraseña"}</Text>
+        </Pressable>
+      </View>
 
       <Pressable style={styles.logoutBtn} onPress={logout}>
         <Text style={styles.logoutText}>Cerrar sesión</Text>
@@ -165,6 +235,19 @@ const styles = StyleSheet.create({
   },
   menuTitle: { color: theme.colors.text, fontWeight: "900", fontSize: 17, marginBottom: 3 },
   menuSubtitle: { color: theme.colors.subtext, fontSize: 13 },
+  input: {
+    backgroundColor: theme.colors.input,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    color: theme.colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  button: { marginTop: 2, backgroundColor: theme.colors.primary, borderRadius: 10, alignItems: "center", paddingVertical: 12 },
+  buttonDisabled: { opacity: 0.7 },
+  buttonText: { color: theme.colors.text, fontWeight: "900" },
   logoutBtn: {
     marginTop: 8,
     alignSelf: "center",

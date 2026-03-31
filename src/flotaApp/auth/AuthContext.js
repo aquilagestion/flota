@@ -6,6 +6,10 @@ import {
   signInWithEmailAndPassword,
   signOut,
   createUserWithEmailAndPassword,
+  deleteUser,
+  updatePassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
 } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { firebaseAvailable, firebaseAuth, firestore } from "../firebase/firebase";
@@ -54,19 +58,33 @@ function parseUserRow_(raw) {
   const activo = activoRaw === "SI" || activoRaw === "TRUE" || activoRaw === "1";
   const nombre = String(raw.nombre || "").trim();
   const pwd = String(raw.pwd || raw.password || "").trim();
-  return { email, role, activo, nombre, pwd };
+  const telefono = String(raw.telefono || "").trim();
+  const fecha_alta = String(raw.fecha_alta || "").trim();
+  return { email, role, activo, nombre, pwd, telefono, fecha_alta };
 }
 
 async function fetchUserFromUsersSheetByEmail_(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e) return null;
+  let invalidGetDetected = false;
 
   try {
     const res = await sheetsApi.get("usuario_get", { email: e, user_email: e });
     const row = parseUserRow_(res?.data || res);
     if (row) return row;
-  } catch {
-    // fallback
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("acci") && String(err?.message || "").toLowerCase().includes("no reconocida")) {
+      invalidGetDetected = true;
+    }
+  }
+  try {
+    const res = await sheetsApi.get("usuario_get", { email: e });
+    const row = parseUserRow_(res?.data || res);
+    if (row) return row;
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("acci") && String(err?.message || "").toLowerCase().includes("no reconocida")) {
+      invalidGetDetected = true;
+    }
   }
 
   try {
@@ -76,10 +94,50 @@ async function fetchUserFromUsersSheetByEmail_(email) {
       .map((r) => parseUserRow_(r))
       .find((r) => r && r.email === e);
     if (found) return found;
-  } catch {
-    // sin endpoint o sin conexion
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("acci") && String(err?.message || "").toLowerCase().includes("no reconocida")) {
+      invalidGetDetected = true;
+    }
+  }
+  try {
+    const res = await sheetsApi.get("usuarios_list");
+    const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+    const found = rows
+      .map((r) => parseUserRow_(r))
+      .find((r) => r && r.email === e);
+    if (found) return found;
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("acci") && String(err?.message || "").toLowerCase().includes("no reconocida")) {
+      invalidGetDetected = true;
+    }
+  }
+  if (invalidGetDetected) {
+    throw new Error("El backend Apps Script no tiene habilitado usuario_get/usuarios_list.");
   }
   return null;
+}
+
+async function authenticateWithUsersSheet_(email, password) {
+  const e = String(email || "").trim().toLowerCase();
+  const fromSheet = await fetchUserFromUsersSheetByEmail_(e);
+  if (!fromSheet) {
+    throw new Error("Usuario no encontrado. Regístrate primero.");
+  }
+  if (!fromSheet.activo) {
+    throw new Error("Usuario inactivo. Contacta con el gestor.");
+  }
+  const pwdInSheet = String(fromSheet.pwd || "").trim();
+  if (!pwdInSheet) {
+    throw new Error("Usuario sin contraseña en USUARIOS. Contacta con el gestor.");
+  }
+  if (String(password || "") !== pwdInSheet) {
+    throw new Error("Contraseña incorrecta.");
+  }
+  return {
+    uid: `local-${e}`,
+    email: e,
+    role: normalizeRole(fromSheet?.role || ROLES.OPERARIO),
+  };
 }
 
 function todayDmy_() {
@@ -105,6 +163,31 @@ async function upsertUsuarioEnSheets_(payload, userEmailForMeta) {
   return false;
 }
 
+async function registerUsuarioPublicoEnSheets_(payload) {
+  const actions = ["usuario_registro_publico", "usuario_publico_guardar", "registro_usuario", "registro_publico_usuario", "usuario_guardar"];
+  const metas = [{}, { user_email: "" }];
+  let lastErr = null;
+  for (const action of actions) {
+    for (const meta of metas) {
+      try {
+        await sheetsApi.post(action, payload, meta);
+        return true;
+      } catch (e) {
+        lastErr = e;
+        const msg = String(e?.message || "").toLowerCase();
+        if (msg.includes("usuario no encontrado o inactivo")) {
+          throw new Error("El backend bloquea altas públicas: requiere user_email activo para POST.");
+        }
+        if (msg.includes("acci") && msg.includes("no reconocida") && action !== "usuario_guardar") {
+          continue;
+        }
+      }
+    }
+  }
+  if (lastErr) throw lastErr;
+  return false;
+}
+
 async function createResponsableRequest_(payload, userEmailForMeta) {
   // Backends compatibles posibles (dependiendo de la version de Apps Script desplegada).
   const actions = ["solicitud_responsable_crear", "rol_responsable_solicitar", "usuario_solicitar_responsable"];
@@ -117,6 +200,28 @@ async function createResponsableRequest_(payload, userEmailForMeta) {
     }
   }
   return false;
+}
+
+async function updatePasswordInUsersSheet_(email, newPassword, userEmailForMeta) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) throw new Error("Email inválido para actualizar contraseña.");
+
+  const existing = await fetchUserFromUsersSheetByEmail_(e);
+  if (!existing) throw new Error("Usuario no encontrado en USUARIOS.");
+  if (!existing.activo) throw new Error("Usuario inactivo. Contacta con el gestor.");
+
+  const payload = {
+    email: e,
+    nombre: String(existing.nombre || "").trim(),
+    rol: normalizeRole(existing.role || ROLES.OPERARIO),
+    activo: existing.activo ? "SI" : "NO",
+    telefono: String(existing.telefono || "").trim(),
+    pwd: String(newPassword || ""),
+    fecha_alta: String(existing.fecha_alta || "").trim() || todayDmy_(),
+    actualizado_por_email: String(userEmailForMeta || e).trim().toLowerCase(),
+  };
+
+  await upsertUsuarioEnSheets_(payload, userEmailForMeta || e);
 }
 
 async function loadLocalUser_() {
@@ -186,12 +291,35 @@ export function AuthProvider({ children }) {
     const unsub = onAuthStateChanged(firebaseAuth, async (u) => {
       setUser(u);
       if (!u) {
+        const local = await loadLocalUser_();
+        if (local?.email) {
+          const email = String(local.email || "").trim().toLowerCase();
+          const fromSheet = await fetchUserFromUsersSheetByEmail_(email);
+          if (fromSheet && !fromSheet.activo) {
+            setUser(null);
+            setRole(null);
+            await saveLocalUser_(null);
+            await saveCachedRole(null);
+            setBooting(false);
+            return;
+          }
+          const effectiveRole = normalizeRole(fromSheet?.role || local.role || ROLES.OPERARIO);
+          setUser({ uid: local.uid || `local-${email}`, email });
+          setRole(effectiveRole);
+          await saveLocalUser_({ uid: local.uid || `local-${email}`, email, role: effectiveRole });
+          await saveCachedRole(effectiveRole);
+          setBooting(false);
+          return;
+        }
+
         setRole(null);
+        await saveLocalUser_(null);
         await saveCachedRole(null);
         setBooting(false);
         return;
       }
       try {
+        await saveLocalUser_(null);
         const sheetUser = await fetchUserFromUsersSheetByEmail_(u.email || "");
         if (sheetUser && !sheetUser.activo) {
           await signOut(firebaseAuth);
@@ -238,27 +366,32 @@ export function AuthProvider({ children }) {
       async login(email, password) {
         const e = email.trim().toLowerCase();
         if (!firebaseAvailable || !firebaseAuth) {
-          const fromSheet = await fetchUserFromUsersSheetByEmail_(e);
-          if (!fromSheet) {
-            throw new Error("Usuario no encontrado. Regístrate primero.");
-          }
-          if (!fromSheet.activo) {
-            throw new Error("Usuario inactivo. Contacta con el gestor.");
-          }
-          if (!String(fromSheet.pwd || "").trim()) {
-            throw new Error("Usuario sin contraseña en USUARIOS. Contacta con el gestor.");
-          }
-          if (String(password || "") !== String(fromSheet.pwd || "")) {
-            throw new Error("Contraseña incorrecta.");
-          }
-          const localUser = { uid: `local-${e}`, email: e, role: normalizeRole(fromSheet?.role || ROLES.OPERARIO) };
+          const localUser = await authenticateWithUsersSheet_(e, password);
           setUser({ uid: localUser.uid, email: localUser.email });
           setRole(localUser.role);
           await saveLocalUser_(localUser);
           await saveCachedRole(localUser.role);
           return;
         }
-        await signInWithEmailAndPassword(firebaseAuth, e, password);
+        try {
+          await signInWithEmailAndPassword(firebaseAuth, e, password);
+          return;
+        } catch (firebaseErr) {
+          const code = String(firebaseErr?.code || "");
+          const canFallbackToSheet =
+            code === "auth/invalid-credential" ||
+            code === "auth/user-not-found" ||
+            code === "auth/wrong-password";
+          if (!canFallbackToSheet) {
+            throw firebaseErr;
+          }
+
+          const localUser = await authenticateWithUsersSheet_(e, password);
+          setUser({ uid: localUser.uid, email: localUser.email });
+          setRole(localUser.role);
+          await saveLocalUser_(localUser);
+          await saveCachedRole(localUser.role);
+        }
       },
       async register(email, password, extra = {}) {
         const e = email.trim().toLowerCase();
@@ -275,17 +408,25 @@ export function AuthProvider({ children }) {
 
           // Si pide RESPONSABLE, entra como OPERARIO hasta aprobación de gestor.
           const effectiveRole = roleRequested === ROLES.RESPONSABLE ? ROLES.OPERARIO : ROLES.OPERARIO;
-          await upsertUsuarioEnSheets_(
-            {
+          try {
+            await registerUsuarioPublicoEnSheets_({
               email: e,
               nombre,
               rol: effectiveRole,
               activo: "SI",
               pwd: String(password || ""),
               fecha_alta: todayDmy_(),
-            },
-            e
-          );
+            });
+          } catch (eReg) {
+            const raw = String(eReg?.message || "");
+            const low = raw.toLowerCase();
+            if (low.includes("no encontrado o inactivo") || low.includes("inactivo")) {
+              throw new Error(
+                "El backend bloqueó el alta pública. Debes habilitar el registro de usuarios en Apps Script o usar un endpoint de registro público."
+              );
+            }
+            throw eReg;
+          }
 
           let requestSent = false;
           if (roleRequested === ROLES.RESPONSABLE) {
@@ -309,6 +450,7 @@ export function AuthProvider({ children }) {
           return { requestedRole: roleRequested, requestSent };
         }
         await createUserWithEmailAndPassword(firebaseAuth, e, password);
+        const createdFirebaseUser = firebaseAuth.currentUser;
 
         // Refleja también el alta en USUARIOS para flujos corporativos con Sheets.
         const effectiveRole = roleRequested === ROLES.RESPONSABLE ? ROLES.OPERARIO : ROLES.OPERARIO;
@@ -322,11 +464,30 @@ export function AuthProvider({ children }) {
               pwd: String(password || ""),
               fecha_alta: todayDmy_(),
             },
-            e
+            ""
           );
-        } catch {
-          // no bloqueamos alta Firebase si falla el espejo en Sheets
+        } catch (eUpsert) {
+          // Si falla espejo en USUARIOS, deshacemos el alta Firebase para no dejar inconsistencias.
+          if (createdFirebaseUser) {
+            try {
+              await deleteUser(createdFirebaseUser);
+            } catch {
+              // si no se puede borrar, al menos cerramos sesión para evitar uso parcial.
+              try {
+                await signOut(firebaseAuth);
+              } catch {
+                // silent
+              }
+            }
+          }
+          throw new Error(eUpsert?.message || "No se pudo registrar el usuario en USUARIOS.");
         }
+
+        const mirrored = await fetchUserFromUsersSheetByEmail_(e);
+        if (!mirrored) {
+          throw new Error("Alta incompleta: el usuario no aparece en USUARIOS.");
+        }
+
         let requestSent = false;
         if (roleRequested === ROLES.RESPONSABLE) {
           requestSent = await createResponsableRequest_(
@@ -343,14 +504,52 @@ export function AuthProvider({ children }) {
         return { requestedRole: roleRequested, requestSent };
       },
       async logout() {
-        if (!firebaseAvailable || !firebaseAuth) {
-          setUser(null);
-          setRole(null);
-          await saveLocalUser_(null);
-          await saveCachedRole(null);
-          return;
+        if (firebaseAvailable && firebaseAuth) {
+          try {
+            await signOut(firebaseAuth);
+          } catch {
+            // si falla Firebase, igual limpiamos sesion local
+          }
         }
-        await signOut(firebaseAuth);
+        setUser(null);
+        setRole(null);
+        await saveLocalUser_(null);
+        await saveCachedRole(null);
+      },
+      async changePassword(currentPassword, newPassword) {
+        const currentPwd = String(currentPassword || "");
+        const nextPwd = String(newPassword || "");
+        if (!nextPwd || nextPwd.length < 6) {
+          throw new Error("La nueva contraseña debe tener al menos 6 caracteres.");
+        }
+        const email = String(user?.email || "").trim().toLowerCase();
+        if (!email) throw new Error("No hay usuario autenticado.");
+
+        // Validamos la contraseña actual contra USUARIOS para garantizar control en backend corporativo.
+        const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
+        if (!sheetUser) throw new Error("Usuario no encontrado en USUARIOS.");
+        if (!sheetUser.activo) throw new Error("Usuario inactivo. Contacta con el gestor.");
+        if (String(sheetUser.pwd || "").trim() !== currentPwd) {
+          throw new Error("La contraseña actual no coincide.");
+        }
+
+        // Si hay sesión Firebase real, mantenemos ambas credenciales en sincronía.
+        const firebaseUser = firebaseAvailable && firebaseAuth ? firebaseAuth.currentUser : null;
+        if (firebaseUser?.email && String(firebaseUser.email).trim().toLowerCase() === email) {
+          try {
+            const credential = EmailAuthProvider.credential(email, currentPwd);
+            await reauthenticateWithCredential(firebaseUser, credential);
+            await updatePassword(firebaseUser, nextPwd);
+          } catch (e) {
+            const code = String(e?.code || "");
+            if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+              throw new Error("La contraseña actual de Firebase no coincide.");
+            }
+            throw new Error(e?.message || "No se pudo actualizar la contraseña en Firebase.");
+          }
+        }
+
+        await updatePasswordInUsersSheet_(email, nextPwd, email);
       },
     }),
     [user, role, booting]

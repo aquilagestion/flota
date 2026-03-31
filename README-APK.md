@@ -11,6 +11,7 @@ El perfil `preview` de `eas.json` esta configurado para salida APK.
 
 Además de tus variables actuales, la app ahora usa Firebase:
 
+- `EXPO_PUBLIC_USE_FIREBASE` (`false` para trabajar solo con Sheet)
 - `EXPO_PUBLIC_FIREBASE_API_KEY`
 - `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN`
 - `EXPO_PUBLIC_FIREBASE_PROJECT_ID`

@@ -17,10 +17,14 @@ function assertFirebaseConfig(cfg) {
 }
 
 let firebaseAvailable = true;
-try {
-  assertFirebaseConfig(env.firebase);
-} catch {
+if (!env.useFirebase) {
   firebaseAvailable = false;
+} else {
+  try {
+    assertFirebaseConfig(env.firebase);
+  } catch {
+    firebaseAvailable = false;
+  }
 }
 
 export const firebaseApp = firebaseAvailable

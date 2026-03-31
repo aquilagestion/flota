@@ -75,6 +75,17 @@ export default function DestinationsScreen({ navigation }) {
     Alert.alert("Guardado", "Configuración de destinos actualizada.");
   };
 
+  if (!gestor) {
+    return (
+      <ScrollView style={styles.safe} contentContainerStyle={styles.content}>
+        <Header onBack={() => navigation.navigate("Menu")} />
+        <View style={styles.card}>
+          <Text style={styles.help}>Solo el rol GESTOR puede acceder a configuración de destinos.</Text>
+        </View>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView style={styles.safe} contentContainerStyle={styles.content}>
       <Header onBack={() => navigation.navigate("Menu")} />
