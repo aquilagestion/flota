@@ -19,5 +19,21 @@ Además de tus variables actuales, la app ahora usa Firebase:
 - `EXPO_PUBLIC_FIREBASE_APP_ID`
 
 ## Salida local con `build-apk.bat`
-El APK (release) se copiará a `C:\flota\flota_releases` con el nombre que empieza por:
-`creada por Miguel Montero con soporte de Cursor IA - GESTIFLOTA GREFA.apk`
+El APK (release) se copiará siempre a `C:\flota\flota_releases` con formato:
+`Gestiflota Version <version_sin_puntos> <yyyyMMdd> <HHmmss>.apk`
+
+Ejemplo:
+`Gestiflota Version 1_0_0 20260331 110542.apk`
+
+## Flujo recomendado: bundle local y luego Git
+
+Si quieres trabajar siempre en `C:\flota` y commitear solo cuando se genera bundle local:
+
+1. Ejecuta `npm run bundle:git`
+2. El script corre `build-apk.bat`
+3. Si el bundle termina bien, muestra cambios Git
+4. Te pide mensaje de commit y opcionalmente push a `origin/master`
+
+Tambien puedes usar solo bundle local:
+
+- `npm run bundle:local`
