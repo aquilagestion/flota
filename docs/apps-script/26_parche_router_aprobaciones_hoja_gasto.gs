@@ -5,7 +5,7 @@
 
 // --- doGet(e) ---
 // if (action === "hojas_gasto_list") {
-//   requireRolGestor_(user);
+//   requireRolGestorOrAdministracion_(user);
 //   var out = jsonOk(apiHojasGastoList({
 //     user_email: e.parameter.user_email || "",
 //     requester_email: e.parameter.user_email || ""
@@ -16,7 +16,7 @@
 
 // --- doPost(e) ---
 // if (action === "hoja_gasto_actualizar_revision") {
-//   requireRolGestor_(user);
+//   requireRolGestorOnly_(user);
 //   var out = jsonOk(apiHojaGastoActualizarRevision(body), "Revisión de hoja de gasto actualizada");
 //   logApi_(action, "POST", user, "success", "OK");
 //   return out;

@@ -4,7 +4,7 @@
 // ======================================================================
 
 // if (action === "hoja_gasto_actualizar_pago") {
-//   requireRolGestor_(user);
+//   requireRolAdministracionOnly_(user);
 //   var out = jsonOk(apiHojaGastoActualizarPago(body), "Pago de hoja de gasto actualizado");
 //   logApi_(action, "POST", user, "success", "OK");
 //   return out;

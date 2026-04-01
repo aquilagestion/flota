@@ -4,7 +4,7 @@ import { AuthContext } from "../auth/AuthContext";
 import { theme } from "../ui/theme";
 import { sheetsApi } from "../api/sheetsApi";
 import { localDb } from "../storage/localDb";
-import { canApproveExpenseSheets, canApproveRequests, isGestor, isResponsable, roleLabel } from "../auth/roles";
+import { canApproveExpenseSheets, canApproveRequests, isAdministracion, isGestor, isResponsable, roleLabel } from "../auth/roles";
 import { syncService } from "../sync/syncService";
 
 function MenuCard({ title, subtitle, onPress }) {
@@ -20,6 +20,7 @@ export default function MenuScreen({ navigation }) {
   const { logout, role, user, changePassword } = useContext(AuthContext);
   const gestor = isGestor(role);
   const responsable = isResponsable(role);
+  const administracion = isAdministracion(role);
   const canApprove = canApproveRequests(role);
   const canApproveSheets = canApproveExpenseSheets(role);
   const [outboxCount, setOutboxCount] = useState(0);
@@ -28,6 +29,7 @@ export default function MenuScreen({ navigation }) {
   const [newPwd, setNewPwd] = useState("");
   const [newPwd2, setNewPwd2] = useState("");
   const [pwdBusy, setPwdBusy] = useState(false);
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
 
   async function refreshOutboxState_() {
     const outbox = await localDb.getOutbox();
@@ -120,31 +122,35 @@ export default function MenuScreen({ navigation }) {
       <Text style={styles.section}>Sección</Text>
       <MenuCard
         title="Vehículos"
-        subtitle={gestor ? "Alta/consulta de vehículos." : "Consulta de vehículos y datos de flota."}
+        subtitle={gestor || administracion ? "Alta/consulta de vehículos." : "Consulta de vehículos y datos de flota."}
         onPress={() => navigation.navigate("Vehiculos")}
       />
-      <MenuCard
-        title="Introducción gastos"
-        subtitle="Formulario real (seguro, impuestos, combustible, parking, etc.)."
-        onPress={() => navigation.navigate("Gasto")}
-      />
-      <MenuCard title="Mantenimiento" subtitle="Registro operativo con fotos y kilometraje." onPress={() => navigation.navigate("Mantenimiento")} />
-      <MenuCard
-        title="Historial"
-        subtitle={
-          gestor
-            ? "Timeline unificada por vehículo."
-            : responsable
-              ? "Tus registros + registros de vehículos a tu cargo."
-              : "Tus registros grabados."
-        }
-        onPress={() => navigation.navigate("Historial")}
-      />
-      <MenuCard
-        title="Hojas de gasto"
-        subtitle="Agrupa gastos pagados por usuario y envía la hoja para reembolso."
-        onPress={() => navigation.navigate("HojasGasto")}
-      />
+      {!administracion ? (
+        <>
+          <MenuCard
+            title="Introducción gastos"
+            subtitle="Formulario real (seguro, impuestos, combustible, parking, etc.)."
+            onPress={() => navigation.navigate("Gasto")}
+          />
+          <MenuCard title="Mantenimiento" subtitle="Registro operativo con fotos y kilometraje." onPress={() => navigation.navigate("Mantenimiento")} />
+          <MenuCard
+            title="Historial"
+            subtitle={
+              gestor
+                ? "Timeline unificada por vehículo."
+                : responsable
+                  ? "Tus registros + registros de vehículos a tu cargo."
+                  : "Tus registros grabados."
+            }
+            onPress={() => navigation.navigate("Historial")}
+          />
+          <MenuCard
+            title="Hojas de gasto"
+            subtitle="Agrupa gastos pagados por usuario y envía la hoja para reembolso."
+            onPress={() => navigation.navigate("HojasGasto")}
+          />
+        </>
+      ) : null}
       {canApproveSheets ? (
         <MenuCard
           title="Aprobaciones"
@@ -152,63 +158,83 @@ export default function MenuScreen({ navigation }) {
           onPress={() => navigation.navigate("Aprobaciones")}
         />
       ) : null}
-      {canApprove ? (
+      {!administracion ? (
         <MenuCard
-          title="Solicitudes de uso"
-          subtitle="Aprobar/rechazar solicitudes de uso de vehículos."
+          title="Uso de vehículos"
+          subtitle="Formulario de solicitud y calendario de uso de vehículos."
           onPress={() => navigation.navigate("Solicitudes")}
         />
       ) : null}
-      {gestor ? (
+      {gestor || administracion ? (
         <MenuCard
           title="Usuarios y roles"
           subtitle="Autorizar responsables y activar/desactivar usuarios."
           onPress={() => navigation.navigate("Usuarios")}
         />
       ) : null}
-      {gestor ? (
+      {gestor && !administracion ? (
         <MenuCard
           title="Destinos corporativos"
           subtitle="Carpeta Drive/Sheet por defecto y destino personal opcional."
           onPress={() => navigation.navigate("Destinos")}
         />
       ) : null}
-      <MenuCard
-        title={`Sincronizar pendientes (${outboxCount})`}
-        subtitle={lastSyncError ? `Último error: ${lastSyncError}` : "Forzar envío de registros locales al Sheet."}
-        onPress={syncNow}
-      />
+      {!administracion ? (
+        <MenuCard
+          title={`Sincronizar pendientes (${outboxCount})`}
+          subtitle={lastSyncError ? `Último error: ${lastSyncError}` : "Forzar envío de registros locales al Sheet."}
+          onPress={syncNow}
+        />
+      ) : null}
 
       <View style={styles.menuCard}>
-        <Text style={styles.menuTitle}>Cambiar contraseña</Text>
-        <Text style={styles.menuSubtitle}>Actualiza tu contraseña en cualquier momento. Se guardará en USUARIOS.</Text>
-        <TextInput
-          style={[styles.input, { marginTop: 10 }]}
-          secureTextEntry
-          placeholder="Contraseña actual"
-          placeholderTextColor={theme.colors.placeholder}
-          value={currentPwd}
-          onChangeText={setCurrentPwd}
-        />
-        <TextInput
-          style={styles.input}
-          secureTextEntry
-          placeholder="Nueva contraseña"
-          placeholderTextColor={theme.colors.placeholder}
-          value={newPwd}
-          onChangeText={setNewPwd}
-        />
-        <TextInput
-          style={styles.input}
-          secureTextEntry
-          placeholder="Confirmar nueva contraseña"
-          placeholderTextColor={theme.colors.placeholder}
-          value={newPwd2}
-          onChangeText={setNewPwd2}
-        />
-        <Pressable style={[styles.button, pwdBusy && styles.buttonDisabled]} onPress={handleChangePassword} disabled={pwdBusy}>
-          <Text style={styles.buttonText}>{pwdBusy ? "Actualizando..." : "Guardar nueva contraseña"}</Text>
+        <Pressable
+          style={styles.toggleRow}
+          onPress={() => {
+            const next = !showPasswordForm;
+            setShowPasswordForm(next);
+            if (!next) {
+              setCurrentPwd("");
+              setNewPwd("");
+              setNewPwd2("");
+            }
+          }}
+        >
+          <Text style={styles.menuTitle}>Cambiar contraseña</Text>
+          <Text style={styles.toggleHint}>{showPasswordForm ? "Ocultar" : "Abrir"}</Text>
         </Pressable>
+        <Text style={styles.menuSubtitle}>Actualiza tu contraseña en cualquier momento. Se guardará en USUARIOS.</Text>
+        {showPasswordForm ? (
+          <>
+            <TextInput
+              style={[styles.input, { marginTop: 10 }]}
+              secureTextEntry
+              placeholder="Contraseña actual"
+              placeholderTextColor={theme.colors.placeholder}
+              value={currentPwd}
+              onChangeText={setCurrentPwd}
+            />
+            <TextInput
+              style={styles.input}
+              secureTextEntry
+              placeholder="Nueva contraseña"
+              placeholderTextColor={theme.colors.placeholder}
+              value={newPwd}
+              onChangeText={setNewPwd}
+            />
+            <TextInput
+              style={styles.input}
+              secureTextEntry
+              placeholder="Confirmar nueva contraseña"
+              placeholderTextColor={theme.colors.placeholder}
+              value={newPwd2}
+              onChangeText={setNewPwd2}
+            />
+            <Pressable style={[styles.button, pwdBusy && styles.buttonDisabled]} onPress={handleChangePassword} disabled={pwdBusy}>
+              <Text style={styles.buttonText}>{pwdBusy ? "Actualizando..." : "Guardar nueva contraseña"}</Text>
+            </Pressable>
+          </>
+        ) : null}
       </View>
 
       <Pressable style={styles.logoutBtn} onPress={logout}>
@@ -248,6 +274,8 @@ const styles = StyleSheet.create({
   },
   menuTitle: { color: theme.colors.text, fontWeight: "900", fontSize: 17, marginBottom: 3 },
   menuSubtitle: { color: theme.colors.subtext, fontSize: 13 },
+  toggleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  toggleHint: { color: theme.colors.subtext, fontSize: 12, fontWeight: "800" },
   input: {
     backgroundColor: theme.colors.input,
     borderRadius: 10,

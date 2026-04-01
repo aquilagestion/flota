@@ -5,6 +5,8 @@
 
 function apiHojaGastoActualizarRevision(payload) {
   payload = payload || {};
+  var actor = String(payload.user_email || payload.revisado_por || payload.hoja_gasto_revisado_por || "").trim().toLowerCase();
+  requireRolGestorOnly_(actor);
 
   var hojaId = String(payload.hoja_gasto_id || payload.hoja_id_local || "").trim();
   if (!hojaId) throw new Error("Falta campo: hoja_gasto_id / hoja_id_local");

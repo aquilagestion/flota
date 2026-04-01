@@ -5,7 +5,7 @@ import * as Sharing from "expo-sharing";
 import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
 import { AuthContext } from "../auth/AuthContext";
-import { canApproveExpenseSheets } from "../auth/roles";
+import { canApproveExpenseSheets, canPayExpenseSheets, canReviewExpenseSheets } from "../auth/roles";
 import { sheetsApi } from "../api/sheetsApi";
 import { SelectField, TextField } from "../ui/form/Fields";
 import { theme } from "../ui/theme";
@@ -112,6 +112,8 @@ async function getSheetLogoDataUri_() {
 export default function ApprovalsScreen({ navigation }) {
   const { role, user } = React.useContext(AuthContext);
   const allowed = canApproveExpenseSheets(role);
+  const canReview = canReviewExpenseSheets(role);
+  const canPay = canPayExpenseSheets(role);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState([]);
   const [estadoRevision, setEstadoRevision] = useState("");
@@ -148,6 +150,10 @@ export default function ApprovalsScreen({ navigation }) {
   }, [allowed, load]);
 
   const setRevision = async (row, estado) => {
+    if (!canReview) {
+      Alert.alert("Permisos insuficientes", "Solo GESTOR puede aprobar/rechazar hojas de gasto.");
+      return;
+    }
     try {
       await sheetsApi.post(
         "hoja_gasto_actualizar_revision",
@@ -165,6 +171,10 @@ export default function ApprovalsScreen({ navigation }) {
   };
 
   const setPago = async (row, estadoPagoNext) => {
+    if (!canPay) {
+      Alert.alert("Permisos insuficientes", "Solo ADMINISTRACION puede gestionar el pago.");
+      return;
+    }
     try {
       await sheetsApi.post(
         "hoja_gasto_actualizar_pago",
@@ -287,6 +297,13 @@ export default function ApprovalsScreen({ navigation }) {
           <Text style={styles.message}>Solo GESTOR (y en futuro ADMINISTRACION) puede gestionar hojas de gasto.</Text>
         </View>
       ) : null}
+      {allowed ? (
+        <View style={styles.card}>
+          <Text style={styles.message}>
+            Permisos activos: {canReview ? "Revisión (GESTOR)" : ""}{canReview && canPay ? " + " : ""}{canPay ? "Pago (ADMINISTRACION)" : ""}
+          </Text>
+        </View>
+      ) : null}
 
       {allowed ? (
         <View style={styles.card}>
@@ -340,28 +357,32 @@ export default function ApprovalsScreen({ navigation }) {
           </Text>
           {!!x.hoja_gasto_observaciones ? <Text style={styles.message}>Obs: {x.hoja_gasto_observaciones}</Text> : null}
           {!!x.hoja_gasto_motivo_rechazo ? <Text style={styles.message}>Motivo rechazo: {x.hoja_gasto_motivo_rechazo}</Text> : null}
-          <View style={styles.row}>
-            <Pressable style={styles.button} onPress={() => setRevision(x, "EN_REVISION")}>
-              <Text style={styles.buttonText}>En revisión</Text>
-            </Pressable>
-            <Pressable style={styles.button} onPress={() => setRevision(x, "APROBADA")}>
-              <Text style={styles.buttonText}>Aprobar</Text>
-            </Pressable>
-            <Pressable style={styles.buttonDanger} onPress={() => setRevision(x, "RECHAZADA")}>
-              <Text style={styles.buttonText}>Rechazar</Text>
-            </Pressable>
-          </View>
-          <View style={styles.row}>
-            <Pressable style={styles.button} onPress={() => setPago(x, "PAGO_PENDIENTE")}>
-              <Text style={styles.buttonText}>Pago pendiente</Text>
-            </Pressable>
-            <Pressable style={styles.button} onPress={() => setPago(x, "PAGADA")}>
-              <Text style={styles.buttonText}>Marcar pagada</Text>
-            </Pressable>
-            <Pressable style={styles.buttonDanger} onPress={() => setPago(x, "RECHAZADA_PAGO")}>
-              <Text style={styles.buttonText}>Rechazar pago</Text>
-            </Pressable>
-          </View>
+          {canReview ? (
+            <View style={styles.row}>
+              <Pressable style={styles.button} onPress={() => setRevision(x, "EN_REVISION")}>
+                <Text style={styles.buttonText}>En revisión</Text>
+              </Pressable>
+              <Pressable style={styles.button} onPress={() => setRevision(x, "APROBADA")}>
+                <Text style={styles.buttonText}>Aprobar</Text>
+              </Pressable>
+              <Pressable style={styles.buttonDanger} onPress={() => setRevision(x, "RECHAZADA")}>
+                <Text style={styles.buttonText}>Rechazar</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {canPay ? (
+            <View style={styles.row}>
+              <Pressable style={styles.button} onPress={() => setPago(x, "PAGO_PENDIENTE")}>
+                <Text style={styles.buttonText}>Pago pendiente</Text>
+              </Pressable>
+              <Pressable style={styles.button} onPress={() => setPago(x, "PAGADA")}>
+                <Text style={styles.buttonText}>Marcar pagada</Text>
+              </Pressable>
+              <Pressable style={styles.buttonDanger} onPress={() => setPago(x, "RECHAZADA_PAGO")}>
+                <Text style={styles.buttonText}>Rechazar pago</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ))}
       {!loading && allowed && !filtered.length ? <Text style={styles.message}>No hay hojas para mostrar.</Text> : null}

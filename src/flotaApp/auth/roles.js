@@ -27,6 +27,10 @@ export function isResponsable(role) {
   return normalizeRole(role) === ROLES.RESPONSABLE;
 }
 
+export function isAdministracion(role) {
+  return normalizeRole(role) === ROLES.ADMINISTRACION;
+}
+
 export function canApproveRequests(role) {
   const r = normalizeRole(role);
   return r === ROLES.GESTOR || r === ROLES.RESPONSABLE;
@@ -35,6 +39,14 @@ export function canApproveRequests(role) {
 export function canApproveExpenseSheets(role) {
   const r = normalizeRole(role);
   return r === ROLES.GESTOR || r === ROLES.ADMINISTRACION;
+}
+
+export function canReviewExpenseSheets(role) {
+  return normalizeRole(role) === ROLES.GESTOR;
+}
+
+export function canPayExpenseSheets(role) {
+  return normalizeRole(role) === ROLES.ADMINISTRACION;
 }
 
 export function roleLabel(role) {

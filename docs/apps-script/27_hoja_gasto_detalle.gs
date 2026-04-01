@@ -6,7 +6,7 @@
 function apiHojaGastoDetalle(payload) {
   payload = payload || {};
   var user = String(payload.user_email || payload.requester_email || "").trim().toLowerCase();
-  requireRolGestor_(user);
+  requireRolGestorOrAdministracion_(user);
 
   var hojaId = String(payload.hoja_gasto_id || payload.hoja_id_local || "").trim();
   if (!hojaId) throw new Error("Falta campo: hoja_gasto_id / hoja_id_local");

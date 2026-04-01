@@ -2,12 +2,12 @@
 // 12_usuarios_roles.gs
 // Gestion de usuarios/roles desde pestana USUARIOS:
 // headers: email | nombre | rol | activo | telefono | fecha_alta
-// roles: GESTOR | RESPONSABLE | OPERARIO
+// roles: GESTOR | ADMINISTRACION | RESPONSABLE | OPERARIO
 // ======================================================================
 
 function normalizeRol_(rol) {
   var v = String(rol || "").trim().toUpperCase();
-  if (v !== "GESTOR" && v !== "RESPONSABLE" && v !== "OPERARIO") return "OPERARIO";
+  if (v !== "GESTOR" && v !== "ADMINISTRACION" && v !== "RESPONSABLE" && v !== "OPERARIO") return "OPERARIO";
   return v;
 }
 

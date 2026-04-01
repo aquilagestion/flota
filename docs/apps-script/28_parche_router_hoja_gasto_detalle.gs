@@ -5,7 +5,7 @@
 
 // --- doGet(e) ---
 // if (action === "hoja_gasto_detalle") {
-//   requireRolGestor_(user);
+//   requireRolGestorOrAdministracion_(user);
 //   var out = jsonOk(
 //     apiHojaGastoDetalle({
 //       hoja_gasto_id: e.parameter.hoja_gasto_id || e.parameter.hoja_id_local || "",

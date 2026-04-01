@@ -6,6 +6,8 @@
 
 function apiHojaGastoActualizarPago(payload) {
   payload = payload || {};
+  var actor = String(payload.user_email || payload.pagado_por || payload.hoja_gasto_pagado_por || "").trim().toLowerCase();
+  requireRolAdministracionOnly_(actor);
 
   var hojaId = String(payload.hoja_gasto_id || payload.hoja_id_local || "").trim();
   if (!hojaId) throw new Error("Falta campo: hoja_gasto_id / hoja_id_local");

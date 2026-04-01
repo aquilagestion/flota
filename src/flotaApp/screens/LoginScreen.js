@@ -1,5 +1,5 @@
 import React, { useContext, useMemo, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, BackHandler, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
 import { ROLES } from "../auth/roles";
 import { theme } from "../ui/theme";
@@ -18,6 +18,13 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
 
   const title = useMemo(() => (mode === "login" ? "Acceso" : "Crear cuenta"), [mode]);
+
+  const exitApp = () => {
+    Alert.alert("Salir", "¿Quieres cerrar la aplicación?", [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Salir", style: "destructive", onPress: () => BackHandler.exitApp() },
+    ]);
+  };
 
   const submit = async () => {
     const e = email.trim();
@@ -62,6 +69,9 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.safe}>
+      <View style={styles.logoWrap}>
+        <Image source={require("../../../assets/logo-grefa-45.png")} style={styles.logo} resizeMode="contain" />
+      </View>
       <View style={styles.card}>
         <Text style={styles.title}>FLOTA</Text>
         <Text style={styles.subtitle}>{title}</Text>
@@ -133,13 +143,18 @@ export default function LoginScreen() {
             {mode === "login" ? "¿No tienes cuenta? Crear" : "Ya tengo cuenta: entrar"}
           </Text>
         </Pressable>
+        <Pressable onPress={exitApp} disabled={busy} style={styles.exitBtn}>
+          <Text style={styles.exitText}>Salir</Text>
+        </Pressable>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "center", padding: 16 },
+  safe: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "flex-start", padding: 16, paddingTop: 28 },
+  logoWrap: { width: "100%", alignItems: "center", marginBottom: 10 },
+  logo: { width: 92, height: 92, borderRadius: 18 },
   card: {
     width: "100%",
     maxWidth: 440,
@@ -180,5 +195,7 @@ const styles = StyleSheet.create({
   buttonText: { color: theme.colors.text, fontWeight: "800" },
   link: { marginTop: 12, alignItems: "center" },
   linkText: { color: "#b7ddff", fontWeight: "700" },
+  exitBtn: { marginTop: 12, alignItems: "center", borderWidth: 1, borderColor: "#c96e6e", borderRadius: 8, paddingVertical: 8 },
+  exitText: { color: "#ffb6b6", fontWeight: "700" },
 });
 

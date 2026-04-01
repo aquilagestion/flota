@@ -6,7 +6,7 @@ import { sheetsApi } from "../api/sheetsApi";
 import { theme } from "../ui/theme";
 import * as Sharing from "expo-sharing";
 import { exportVehiclesAsCsv, exportVehiclesAsPdf } from "../../utils/export";
-import { isGestor } from "../auth/roles";
+import { isAdministracion, isGestor } from "../auth/roles";
 
 function Header({ title, onBack }) {
   return (
@@ -115,6 +115,8 @@ function sortVehiclesByMatricula_(list) {
 export default function VehiclesScreen({ navigation }) {
   const { user, role } = React.useContext(AuthContext);
   const gestor = isGestor(role);
+  const administracion = isAdministracion(role);
+  const canManageVehicles = gestor || administracion;
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [queryText, setQueryText] = useState("");
@@ -150,29 +152,37 @@ export default function VehiclesScreen({ navigation }) {
     );
   }, [vehicles, queryText]);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const cached = await localDb.getVehicles();
-      if (cached.length) setVehicles(sortVehiclesByMatricula_(cached));
-      try {
-        const res = await sheetsApi.get("flota_list", { user_email: user?.email || "" });
-        const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-        const sorted = sortVehiclesByMatricula_(list);
-        setVehicles(sorted);
-        await localDb.setVehicles(sorted);
-      } catch {
-        // offline / sin permisos: usamos cache
-      } finally {
-        setLoading(false);
-      }
+  const loadVehicles_ = React.useCallback(async () => {
+    setLoading(true);
+    const cached = await localDb.getVehicles();
+    if (cached.length) setVehicles(sortVehiclesByMatricula_(cached));
+    try {
+      const res = await sheetsApi.get("flota_list", { user_email: user?.email || "" });
+      const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+      const sorted = sortVehiclesByMatricula_(list);
+      setVehicles(sorted);
+      await localDb.setVehicles(sorted);
+    } catch {
+      // offline / sin permisos: usamos cache
+    } finally {
+      setLoading(false);
     }
-    load();
   }, [user?.email]);
 
+  useEffect(() => {
+    loadVehicles_();
+  }, [loadVehicles_]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener("focus", () => {
+      loadVehicles_();
+    });
+    return unsub;
+  }, [navigation, loadVehicles_]);
+
   const save = async () => {
-    if (!gestor) {
-      Alert.alert("Permisos insuficientes", "Solo el rol GESTOR puede dar de alta vehículos.");
+    if (!canManageVehicles) {
+      Alert.alert("Permisos insuficientes", "Solo los roles GESTOR y ADMINISTRACION pueden crear o editar vehículos.");
       return;
     }
     if (!form.matricula.trim()) {
@@ -231,7 +241,8 @@ export default function VehiclesScreen({ navigation }) {
       setShowCreateForm(false);
     } catch (e) {
       Alert.alert("Guardado offline", "No se pudo guardar en Sheets (sin conexión o API_URL sin configurar). Se queda en caché local.");
-      const next = [payload, ...vehicles.filter((v) => String(v.matricula || "").toUpperCase() !== payload.matricula)];
+      const keyToReplace = String(payload.matricula || "").trim().toUpperCase();
+      const next = [payload, ...vehicles.filter((v) => String(getVehicleFieldValue_(v, "matricula") || "").trim().toUpperCase() !== keyToReplace)];
       const sorted = sortVehiclesByMatricula_(next);
       setVehicles(sorted);
       await localDb.setVehicles(sorted);
@@ -241,8 +252,22 @@ export default function VehiclesScreen({ navigation }) {
   };
 
   return (
-    <ScrollView style={styles.safe} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.safe} contentContainerStyle={styles.content} stickyHeaderIndices={[1]}>
       <Header title="Vehículos" onBack={() => navigation.navigate("Menu")} />
+
+      <View style={styles.stickyBar}>
+        <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Acciones rápidas</Text>
+        <Pressable style={styles.buttonSecondary} onPress={() => { setSelectedExportFields(FIELDS_FLOTA_SHEET); setExportModalVisible(true); }}>
+          <Text style={styles.buttonText}>Exportar flota (elegir campos y exportar)</Text>
+        </Pressable>
+        {canManageVehicles ? (
+          <Pressable style={styles.button} onPress={() => navigation.navigate("VehiculoNuevo")}>
+            <Text style={styles.buttonText}>Alta nuevo vehículo</Text>
+          </Pressable>
+        ) : null}
+        </View>
+      </View>
 
       <Text style={styles.sectionTitle}>Listado ({filtered.length})</Text>
       <TextInput
@@ -269,24 +294,6 @@ export default function VehiclesScreen({ navigation }) {
         </Pressable>
       ))}
       {filtered.length === 0 ? <Text style={styles.message}>No hay vehículos.</Text> : null}
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Exportar flota</Text>
-        <Text style={styles.message}>Configura los campos a exportar y genera un CSV.</Text>
-        <Pressable style={styles.buttonSecondary} onPress={() => { setSelectedExportFields(FIELDS_FLOTA_SHEET); setExportModalVisible(true); }}>
-          <Text style={styles.buttonText}>Elegir campos y exportar</Text>
-        </Pressable>
-      </View>
-
-      {gestor ? (
-        <Pressable style={styles.button} onPress={() => setShowCreateForm(true)}>
-          <Text style={styles.buttonText}>Alta nuevo vehículo</Text>
-        </Pressable>
-      ) : (
-        <View style={styles.card}>
-          <Text style={styles.message}>Solo el rol GESTOR puede dar de alta vehículos.</Text>
-        </View>
-      )}
 
       {showCreateForm ? (
         <View style={styles.card}>
@@ -349,7 +356,13 @@ export default function VehiclesScreen({ navigation }) {
           <TextInput style={styles.input} placeholderTextColor={theme.colors.placeholder} value={form.observaciones} onChangeText={(v) => setForm((p) => ({ ...p, observaciones: v }))} multiline />
 
           <View style={styles.formActions}>
-            <Pressable style={styles.buttonSecondary} onPress={() => { setShowCreateForm(false); setForm(INITIAL_FORM); }}>
+            <Pressable
+              style={styles.buttonSecondary}
+              onPress={() => {
+                setShowCreateForm(false);
+                setForm(INITIAL_FORM);
+              }}
+            >
               <Text style={styles.buttonText}>Cancelar</Text>
             </Pressable>
             <Pressable style={styles.button} onPress={save}>
@@ -468,9 +481,22 @@ export default function VehiclesScreen({ navigation }) {
               ))}
             </ScrollView>
 
-            <Pressable style={[styles.buttonSecondary, { alignSelf: "center", marginTop: 12 }]} onPress={() => setDetailsModalVisible(false)}>
-              <Text style={styles.buttonText}>Cerrar</Text>
-            </Pressable>
+            <View style={styles.modalActions}>
+              {canManageVehicles ? (
+                <Pressable
+                  style={styles.button}
+                  onPress={() => {
+                    setDetailsModalVisible(false);
+                    navigation.navigate("VehiculoEditar", { vehicle: selectedVehicle });
+                  }}
+                >
+                  <Text style={styles.buttonText}>Editar vehículo</Text>
+                </Pressable>
+              ) : null}
+              <Pressable style={styles.buttonSecondary} onPress={() => setDetailsModalVisible(false)}>
+                <Text style={styles.buttonText}>Cerrar</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -480,7 +506,8 @@ export default function VehiclesScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.colors.bg },
-  content: { padding: 14, paddingBottom: 26 },
+  content: { padding: 14, paddingTop: 22, paddingBottom: 26 },
+  stickyBar: { backgroundColor: theme.colors.bg, paddingBottom: 8 },
   header: { alignItems: "center", marginBottom: 8 },
   title: { color: theme.colors.text, fontSize: 24, fontWeight: "900", marginBottom: 8 },
   backBtn: { borderColor: "#4f88bf", borderWidth: 1, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 7, alignSelf: "center" },
