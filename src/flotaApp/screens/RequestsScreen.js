@@ -178,8 +178,8 @@ function notifyEmailsFromFlotaRow_(v) {
 
 function displayDateLabel_(raw) {
   const s = String(raw || "").trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return formatYmdToEsDmy(s);
-  return s || "—";
+  if (!s) return "—";
+  return normalizeDateToDmy_(s) || "—";
 }
 
 /** FLOTA columna activo (p. ej. R): NO / false / 0 → no entra en “disponibles”. */
@@ -1159,7 +1159,7 @@ export default function RequestsScreen({ navigation }) {
               <Text style={styles.message}>{x.trabajador_nombre || "-"}</Text>
               <Text style={styles.message}>{x.trabajador_email || "-"}</Text>
               <Text style={styles.message}>
-                {x.fecha_inicio || "-"} {x.hora_inicio || ""} → {x.fecha_fin || "-"} {x.hora_fin || ""}
+                {displayDateLabel_(x.fecha_inicio)} {x.hora_inicio || ""} → {displayDateLabel_(x.fecha_fin)} {x.hora_fin || ""}
               </Text>
               <Text style={styles.message}>{x.motivo || "-"}</Text>
               {x.estado === "RECHAZADA" && x.motivo_rechazo ? <Text style={styles.message}>Motivo rechazo: {x.motivo_rechazo}</Text> : null}
