@@ -18,6 +18,30 @@ function normalizeEmail_(v) {
   return String(v || "").trim().toLowerCase();
 }
 
+/** Quita tildes para comparar cabeceras (p. ej. matrícula → matricula). */
+function headerKeyNormalize_(s) {
+  var t = String(s || "")
+    .trim()
+    .replace(/^\uFEFF/, "")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  try {
+    return t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  } catch (e) {
+    return t;
+  }
+}
+
+/** Índice de cabecera ignorando mayúsculas, BOM y tildes (p. ej. "Matrícula", "fecha_inicio"). */
+function headerIndexCI_(headers, canonical) {
+  var want = headerKeyNormalize_(canonical);
+  for (var i = 0; i < headers.length; i++) {
+    var h = headerKeyNormalize_(headers[i]);
+    if (h === want) return i;
+  }
+  return -1;
+}
+
 function normalizeRolSegunUsuarios_(email) {
   var e = normalizeEmail_(email);
   if (!e) return "OPERARIO";
@@ -26,9 +50,13 @@ function normalizeRolSegunUsuarios_(email) {
   var all = sh.getDataRange().getValues();
   if (!all || all.length < 2) return "OPERARIO";
 
-  var headers = all[0].map(String);
-  var idxEmail = headers.indexOf("email");
-  var idxRol = headers.indexOf("rol");
+  var headers = all[0].map(function (h) {
+    return String(h || "")
+      .trim()
+      .replace(/^\uFEFF/, "");
+  });
+  var idxEmail = headerIndexCI_(headers, "email");
+  var idxRol = headerIndexCI_(headers, "rol");
   if (idxEmail < 0 || idxRol < 0) return "OPERARIO";
 
   for (var i = 1; i < all.length; i++) {
@@ -36,12 +64,31 @@ function normalizeRolSegunUsuarios_(email) {
     if (mail !== e) continue;
     var rol = String(all[i][idxRol] || "").trim().toUpperCase();
     if (rol === "GESTOR" || rol === "RESPONSABLE" || rol === "OPERARIO") return rol;
+    if (rol === "ADMINISTRACION" || rol === "ADMIN") return "ADMINISTRACION";
     return "OPERARIO";
   }
   return "OPERARIO";
 }
 function canViewAllByRole_(email) {
   return normalizeRolSegunUsuarios_(email) === "GESTOR";
+}
+
+/**
+ * La celda e-mail_de_notificaciones puede traer varios correos separados por ; o ,.
+ * Antes solo se comparaba la cadena entera con normalizeEmail_, y nunca coincidía.
+ */
+function notificacionesEmailMatches_(me, notifRaw) {
+  var me2 = normalizeEmail_(me);
+  if (!me2) return false;
+  var raw = String(notifRaw || "").trim();
+  if (!raw) return false;
+  if (normalizeEmail_(raw) === me2) return true;
+  var parts = raw.split(/[;,]/);
+  for (var i = 0; i < parts.length; i++) {
+    var e = normalizeEmail_(parts[i]);
+    if (e && e === me2) return true;
+  }
+  return false;
 }
 
 function getMatriculasACargo_(email) {
@@ -55,23 +102,59 @@ function getMatriculasACargo_(email) {
     var mat = String(r.matricula || "").trim().toUpperCase();
     if (!mat) continue;
     var resp = normalizeEmail_(r.responsable || "");
+    if (resp === me) {
+      out[mat] = true;
+      continue;
+    }
     var notifRaw = String(r["e-mail_de_notificaciones"] || r.email_de_notificaciones || "").trim();
-    var notif = normalizeEmail_(notifRaw);
-    if (resp === me || notif === me) out[mat] = true;
+    if (notificacionesEmailMatches_(me, notifRaw)) out[mat] = true;
   }
   return out;
+}
+
+/**
+ * Visibilidad de una hoja de gasto (cabecera = email en columna responsable_email de GASTOS).
+ * matriculasMap: { MAT123: true, ... } matrículas presentes en las filas de esa hoja.
+ * Alineado con la app: OPERARIO solo propias; RESPONSABLE propias o vehículo a cargo; GESTOR/ADMIN todo.
+ */
+function puedeVerHojaGastoResumen_(requester, rol, ownerEmail, matriculasMap) {
+  var req = normalizeEmail_(requester);
+  var owner = normalizeEmail_(ownerEmail);
+  var r = String(rol || "").trim().toUpperCase();
+  if (!req) return false;
+  if (r === "GESTOR" || r === "ADMINISTRACION") return true;
+  if (r === "OPERARIO") return owner === req;
+  if (r === "RESPONSABLE") {
+    if (owner === req) return true;
+    var assigned = getMatriculasACargo_(req);
+    matriculasMap = matriculasMap || {};
+    for (var mat in matriculasMap) {
+      if (!Object.prototype.hasOwnProperty.call(matriculasMap, mat)) continue;
+      if (matriculasMap[mat] && assigned[mat]) return true;
+    }
+    return false;
+  }
+  return false;
 }
 
 function readSheetObjects_(sheetName) {
   var sh = getSheet(sheetName);
   var all = sh.getDataRange().getValues();
   if (!all || all.length < 2) return [];
-  var headers = all[0].map(String);
+  var headers = all[0].map(function (h) {
+    return String(h || "")
+      .trim()
+      .replace(/^\uFEFF/, "");
+  });
   var out = [];
   for (var i = 1; i < all.length; i++) {
     var row = all[i];
     var obj = {};
-    for (var c = 0; c < headers.length; c++) obj[headers[c]] = row[c];
+    for (var c = 0; c < headers.length; c++) {
+      var key = headers[c];
+      if (!key) key = "COL_" + c;
+      obj[key] = row[c];
+    }
     out.push(obj);
   }
   return out;

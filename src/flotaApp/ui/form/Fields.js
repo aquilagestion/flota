@@ -46,7 +46,11 @@ export function TextField({ label, required, value, onChangeText, placeholder, k
 
 export function SelectField({ label, required, value, onChange, options = [], placeholder = "Seleccionar..." }) {
   const [open, setOpen] = useState(false);
-  const shown = useMemo(() => (value ? String(value) : placeholder), [value, placeholder]);
+  const shown = useMemo(() => {
+    if (!value) return placeholder;
+    const selected = options.find((opt) => String(opt?.value) === String(value));
+    return String(selected?.label || value);
+  }, [value, placeholder, options]);
 
   return (
     <View style={{ marginBottom: 10 }}>

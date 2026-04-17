@@ -2,10 +2,10 @@
 
 ## 1) Variables
 
-1. Editar `C:\flota\app\.env`.
-2. Completar los valores reales de API y Firebase.
+1. En la raíz del repo, copia `.env.example` a `.env` (no se sube a git).
+2. Edita `.env` y completa los valores reales de API y Firebase.
 
-Ejemplo (ver `.env.example`):
+Ejemplo (ver `.env.example` en la raíz de `C:\flota`):
 
 - `EXPO_PUBLIC_FIREBASE_API_KEY`
 - `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN`
@@ -18,15 +18,15 @@ Ejemplo (ver `.env.example`):
 
 ```powershell
 npm install -g eas-cli
-cd C:\flota\app
+cd C:\flota
 eas login
 ```
 
 ## 3) Build de APK (preview)
 
 ```powershell
-cd C:\flota\app
-eas build -p android --profile preview
+cd C:\flota
+npm run build:apk
 ```
 
 ## 4) Descargar APK
@@ -37,12 +37,17 @@ eas build -p android --profile preview
 
 ## Alternativa: build local (sin EAS)
 
-Si ya tienes carpeta `android/` generada:
+Requisitos típicos: **Node.js**, **JDK 17** (o el que pida tu `android/`), **Android SDK** con variables `ANDROID_HOME` / `PATH`, y dependencias instaladas (`npm install` en la raíz de `C:\flota`).
+
+1. Sube la versión de release en `app.json` → campo `expo.version` (semver `x.y.z`).
+2. Opcional: `npm run bundle:prepare` (iguala `HELP_APP_VERSION`, `package.json` y `android/app/build.gradle` a esa versión). **Omitible** si vas a ejecutar solo `bundle:local`, porque `build-apk.bat` ya llama al script de sincronización.
+3. Genera el APK:
 
 ```powershell
 cd C:\flota
-.\build-apk.bat
+npm run bundle:local
 ```
 
-El APK se copiará en `C:\flota\flota_releases` con el nombre:
-`"creada por Miguel Montero con soporte de Cursor IA - GESTIFLOTA GREFA.apk"`.
+Equivale a ejecutar `build-apk.bat`: compila `assembleRelease` y copia el resultado.
+
+El APK queda en `C:\flota\flota_releases\GESTIFLOTA_<version>.apk` (versión = `expo.version` en `app.json`). La ruta del último build se guarda en `flota_releases\last_apk_path.txt`.

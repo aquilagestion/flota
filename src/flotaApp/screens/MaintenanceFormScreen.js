@@ -62,11 +62,78 @@ const DEPARTAMENTOS_O_PROYECTOS = [
 const DEPARTAMENTOS_O_PROYECTOS_VALID = new Set(DEPARTAMENTOS_O_PROYECTOS.map((o) => o.value));
 const OTRO_TIPO = "__OTRO_TIPO__";
 
+function normalizeCatalogKey_(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[_\s]+/g, " ");
+}
+
+/** Lee un campo de fila de hoja ignorando mayúsculas / acentos en el nombre de columna. */
+function pickFieldInsensitive_(row, candidateNames) {
+  if (!row || typeof row !== "object") return "";
+  const map = {};
+  for (const k of Object.keys(row)) {
+    map[normalizeCatalogKey_(k)] = k;
+  }
+  for (const name of candidateNames) {
+    const orig = map[normalizeCatalogKey_(name)];
+    if (!orig) continue;
+    const s = String(row[orig]).trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+/** Texto mostrable para una fila de CAT_TIPOS_MANTENIMIENTO (cabeceras variables en la hoja). */
+function pickMaintenanceTipoLabel_(r) {
+  const fromPreferred = pickFieldInsensitive_(r, [
+    "tipo",
+    "nombre",
+    "descripcion",
+    "descripción",
+    "tipo_mantenimiento",
+    "tipo mantenimiento",
+    "tipo intervencion",
+    "tipo intervención",
+    "intervencion",
+    "intervención",
+    "label",
+    "value",
+    "texto",
+  ]);
+  if (fromPreferred) return fromPreferred;
+  const skip = new Set(
+    ["activo", "active", "orden", "id", "visible", "codigo", "código", "code"].map((x) =>
+      normalizeCatalogKey_(x).replace(/\s/g, "")
+    )
+  );
+  for (const k of Object.keys(r)) {
+    const kn = normalizeCatalogKey_(k).replace(/\s/g, "");
+    if (skip.has(kn)) continue;
+    const s = String(r[k]).trim();
+    if (s.length < 2) continue;
+    if (/^(si|no|true|false)$/i.test(s)) continue;
+    return s;
+  }
+  return "";
+}
+
+function isCatalogRowActivo_(r) {
+  const a = pickFieldInsensitive_(r, ["activo", "active", "habilitado", "visible"]);
+  if (!a) return true;
+  const u = String(a).trim().toUpperCase();
+  return u !== "NO" && u !== "N" && u !== "FALSE" && u !== "0";
+}
+
 function buildMaintenanceTypeOptions_(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const options = [];
   for (const r of list) {
-    const label = String(r?.tipo || r?.nombre || r?.label || r?.value || "").trim();
+    if (!isCatalogRowActivo_(r)) continue;
+    const label = pickMaintenanceTipoLabel_(r);
     if (!label) continue;
     if (!options.find((o) => o.value === label)) options.push({ value: label, label });
   }

@@ -91,7 +91,7 @@ function apiSolicitudResponsableCrear(payload) {
 function apiSolicitudesResponsableList(payload) {
   payload = payload || {};
   var requester = String(payload.user_email || payload.requester_email || "").trim().toLowerCase();
-  requireRolGestorAdmin_(requester);
+  requireRolGestorOrAdministracion_(requester);
 
   var estado = String(payload.estado || "").trim().toUpperCase();
   var rows = rowsToObjects_(getSolicitudesResponsableSheet_());
@@ -129,7 +129,7 @@ function assignVehiclesToResponsable_(email, nombre, matriculasArr) {
 function apiSolicitudResponsableResolver(payload) {
   payload = payload || {};
   var requester = String(payload.user_email || payload.resuelto_por_email || "").trim().toLowerCase();
-  requireRolGestorAdmin_(requester);
+  requireRolGestorOrAdministracion_(requester);
 
   var id = String(payload.id_solicitud || "").trim();
   var estado = String(payload.estado || "").trim().toUpperCase(); // APROBADA | RECHAZADA
@@ -166,14 +166,27 @@ function apiSolicitudResponsableResolver(payload) {
     if (h === "comentario") sh.getRange(rowNum, c + 1).setValue(comentario);
   }
 
-  // Actualizar USUARIOS: si se aprueba, pasa a RESPONSABLE.
+  // Actualizar USUARIOS: si se aprueba, pasa a RESPONSABLE (preservar pwd/fecha_alta/telefono).
   if (estado === "APROBADA") {
-    apiUsuarioGuardar({
-      email: String(target.email || "").trim().toLowerCase(),
+    var targetEmail = String(target.email || "").trim().toLowerCase();
+    var existing = null;
+    try {
+      existing = apiUsuarioGet({ email: targetEmail });
+    } catch (e) {
+      existing = null;
+    }
+    var guard = {
+      email: targetEmail,
       nombre: String(target.nombre || "").trim(),
       rol: "RESPONSABLE",
       activo: "SI",
-    });
+    };
+    if (existing) {
+      guard.telefono = String(existing.telefono || "").trim();
+      if (String(existing.fecha_alta || "").trim()) guard.fecha_alta = String(existing.fecha_alta).trim();
+      if (String(existing.pwd || "").trim()) guard.pwd = String(existing.pwd);
+    }
+    apiUsuarioGuardar(guard);
     assignVehiclesToResponsable_(
       String(target.email || "").trim().toLowerCase(),
       String(target.nombre || "").trim(),

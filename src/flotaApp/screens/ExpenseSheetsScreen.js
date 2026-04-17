@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
 import { AuthContext } from "../auth/AuthContext";
+import { isGestor, isResponsable } from "../auth/roles";
 import { sheetsApi } from "../api/sheetsApi";
 import { localDb } from "../storage/localDb";
 import { syncService } from "../sync/syncService";
@@ -219,6 +221,92 @@ function isUserPaidPending_(e) {
   return paidByUser && !alreadyAssigned;
 }
 
+function expenseActorEmail_(e) {
+  return String(e?.usuario_email || e?.responsable_email || e?.user_email || "")
+    .trim()
+    .toLowerCase();
+}
+
+function expensePlate_(e) {
+  return String(e?.matricula || e?.vehiclePlate || "").trim().toUpperCase();
+}
+
+/** Gastos que pueden incluirse en una hoja según rol (además de isUserPaidPending_). */
+function expenseSelectableForSheet_(e, { gestor, responsable, me, assignedSet }) {
+  if (gestor) return true;
+  const owner = expenseActorEmail_(e);
+  const plate = expensePlate_(e);
+  if (responsable) {
+    if (me && owner === me) return true;
+    if (plate && assignedSet && assignedSet.has(plate)) return true;
+    return false;
+  }
+  return !!(me && owner === me);
+}
+
+function sheetTouchesAssignedPlates_(sheet, assignedSet) {
+  if (!assignedSet || !assignedSet.size) return false;
+  const lines = Array.isArray(sheet?.lineas) ? sheet.lineas : [];
+  return lines.some((l) => {
+    const p = String(l?.matricula || "").trim().toUpperCase();
+    return p && assignedSet.has(p);
+  });
+}
+
+function asList_(res) {
+  if (Array.isArray(res?.data)) return res.data;
+  if (Array.isArray(res)) return res;
+  return [];
+}
+
+/** Claves posibles para deduplicar hoja local vs fila del listado remoto. */
+function sheetKeysSet_(s) {
+  const set = new Set();
+  const a = String(s?.hoja_gasto_id || "").trim();
+  const b = String(s?.hoja_id_local || "").trim();
+  const c = String(s?.id || "").trim();
+  if (a) set.add(a);
+  if (b) set.add(b);
+  if (c) set.add(c);
+  return set;
+}
+
+function parseRemoteListRow_(x) {
+  const hid = String(x?.hoja_gasto_id || x?.hoja_id_local || "").trim();
+  return {
+    id: hid || `remote-${String(x?.num_hoja_gasto || "").slice(0, 12)}`,
+    hoja_gasto_id: hid,
+    hoja_id_local: hid,
+    num_hoja_gasto: String(x?.num_hoja_gasto || x?.Num_Hoja_Gasto || "").trim(),
+    Num_Hoja_Gasto: String(x?.num_hoja_gasto || x?.Num_Hoja_Gasto || "").trim(),
+    usuario_email: String(x?.usuario_email || x?.responsable_email || "").trim().toLowerCase(),
+    usuario_nombre: String(x?.usuario_nombre || x?.nombre || "").trim(),
+    estado: String(x?.hoja_gasto_estado || x?.estado || "ENVIADA").trim().toUpperCase(),
+    hoja_gasto_estado: String(x?.hoja_gasto_estado || x?.estado || "ENVIADA").trim().toUpperCase(),
+    hoja_gasto_estado_pago: String(x?.hoja_gasto_estado_pago || x?.estado_pago || "").trim().toUpperCase(),
+    hoja_gasto_fecha_envio: String(x?.hoja_gasto_fecha_envio || x?.createdAtLocal || "").trim(),
+    createdAtLocal: String(x?.createdAtLocal || x?.hoja_gasto_fecha_envio || "").trim(),
+    total_importe: Number(x?.hoja_gasto_total || x?.total_importe || 0) || 0,
+    observaciones: String(x?.hoja_gasto_observaciones || x?.observaciones || "").trim(),
+    lineas: Array.isArray(x?.lineas) ? x.lineas : [],
+    lineas_count: Number(x?.lineas_count || 0) || 0,
+    _fromRemoteList: true,
+  };
+}
+
+/** Hojas visibles en la lista local según rol. */
+function sheetVisibleForRole_(sheet, { gestor, responsable, me, assignedSet }) {
+  if (gestor) return true;
+  const creator = String(sheet?.usuario_email || "").trim().toLowerCase();
+  if (responsable) {
+    if (me && creator === me) return true;
+    if (sheetTouchesAssignedPlates_(sheet, assignedSet)) return true;
+    return false;
+  }
+  if (!creator) return true;
+  return !!(me && creator === me);
+}
+
 function parseDateMs_(value) {
   const raw = String(value || "").trim();
   if (!raw) return 0;
@@ -231,6 +319,9 @@ function parseDateMs_(value) {
 }
 
 function sheetSyncStatus_(sheet, outbox) {
+  if (sheet?._fromRemoteList) {
+    return { text: "SERVIDOR", tone: "ok" };
+  }
   const sid = String(sheet?.id || "").trim();
   const pending = (outbox || []).find((j) => {
     if (j?.kind !== "expense_sheet") return false;
@@ -371,7 +462,10 @@ function personFromSheet_(sheet, user, preferredName) {
 }
 
 export default function ExpenseSheetsScreen({ navigation }) {
-  const { user } = React.useContext(AuthContext);
+  const { user, role } = React.useContext(AuthContext);
+  const gestor = isGestor(role);
+  const responsable = isResponsable(role);
+  const [assignedSet, setAssignedSet] = useState(new Set());
   const [expenses, setExpenses] = useState([]);
   const [sheets, setSheets] = useState([]);
   const [selected, setSelected] = useState({});
@@ -382,6 +476,8 @@ export default function ExpenseSheetsScreen({ navigation }) {
   const [dateTo, setDateTo] = useState("");
   const [outbox, setOutbox] = useState([]);
   const [profileName, setProfileName] = useState("");
+  const [remoteSheets, setRemoteSheets] = useState([]);
+  const [remoteListLoading, setRemoteListLoading] = useState(false);
 
   const reloadAll = React.useCallback(async () => {
     const [allExpenses, allSheets, allOutbox] = await Promise.all([
@@ -393,6 +489,26 @@ export default function ExpenseSheetsScreen({ navigation }) {
     setSheets(Array.isArray(allSheets) ? allSheets : []);
     setOutbox(Array.isArray(allOutbox) ? allOutbox : []);
   }, []);
+
+  const loadRemoteSheets = React.useCallback(async () => {
+    const email = String(user?.email || "").trim();
+    if (!email) {
+      setRemoteSheets([]);
+      return;
+    }
+    setRemoteListLoading(true);
+    try {
+      const res = await sheetsApi.get("hojas_gasto_list", { user_email: email });
+      const rows = asList_(res)
+        .map(parseRemoteListRow_)
+        .filter((x) => String(x?.hoja_gasto_id || "").trim());
+      setRemoteSheets(rows);
+    } catch {
+      setRemoteSheets([]);
+    } finally {
+      setRemoteListLoading(false);
+    }
+  }, [user?.email]);
 
   React.useEffect(() => {
     let alive = true;
@@ -411,6 +527,41 @@ export default function ExpenseSheetsScreen({ navigation }) {
       alive = false;
     };
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      loadRemoteSheets();
+    }, [loadRemoteSheets])
+  );
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!responsable || gestor) {
+        setAssignedSet(new Set());
+        return;
+      }
+      try {
+        const flotaRes = await sheetsApi.get("flota_list", { user_email: user?.email || "" });
+        const flota = Array.isArray(flotaRes?.data) ? flotaRes.data : Array.isArray(flotaRes) ? flotaRes : [];
+        const me = String(user?.email || "").trim().toLowerCase();
+        const mine = flota.filter((v) => {
+          const resp = String(v?.responsable || "").trim().toLowerCase();
+          const notify = String(v?.["e-mail_de_notificaciones"] || v?.email_de_notificaciones || "")
+            .trim()
+            .toLowerCase();
+          return !!me && (resp === me || notify === me);
+        });
+        const next = new Set(mine.map((v) => String(v?.matricula || "").trim().toUpperCase()).filter(Boolean));
+        if (alive) setAssignedSet(next);
+      } catch {
+        if (alive) setAssignedSet(new Set());
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [user?.email, responsable, gestor]);
 
   React.useEffect(() => {
     let alive = true;
@@ -431,12 +582,22 @@ export default function ExpenseSheetsScreen({ navigation }) {
     };
   }, [user?.email]);
 
+  const sheetCtx = useMemo(
+    () => ({
+      gestor,
+      responsable,
+      me: String(user?.email || "").trim().toLowerCase(),
+      assignedSet,
+    }),
+    [gestor, responsable, user?.email, assignedSet]
+  );
+
   const pending = useMemo(() => {
     const fromMs = parseDateMs_(dateFrom);
     const toMs = parseDateMs_(dateTo);
     const toEndMs = toMs ? toMs + 24 * 60 * 60 * 1000 - 1 : 0;
     return expenses
-      .filter(isUserPaidPending_)
+      .filter((e) => isUserPaidPending_(e) && expenseSelectableForSheet_(e, sheetCtx))
       .map((e) => {
         const id = String(e?.id || e?.local_id || "").trim();
         return {
@@ -456,7 +617,36 @@ export default function ExpenseSheetsScreen({ navigation }) {
         return true;
       })
       .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  }, [expenses, dateFrom, dateTo]);
+  }, [expenses, dateFrom, dateTo, sheetCtx]);
+
+  const mergedDisplayedSheets = useMemo(() => {
+    const localVisible = sheets.filter((s) => sheetVisibleForRole_(s, sheetCtx));
+    const keySeen = new Set();
+    localVisible.forEach((s) => {
+      sheetKeysSet_(s).forEach((k) => keySeen.add(k));
+    });
+    const out = [...localVisible];
+    for (const r of remoteSheets) {
+      if (!sheetVisibleForRole_(r, sheetCtx)) continue;
+      const ks = sheetKeysSet_(r);
+      if (!ks.size) continue;
+      const dup = [...ks].some((k) => keySeen.has(k));
+      if (dup) continue;
+      out.push(r);
+      ks.forEach((k) => keySeen.add(k));
+    }
+    out.sort((a, b) => {
+      const da = String(a?.hoja_gasto_fecha_envio || a?.createdAtLocal || "").trim();
+      const db = String(b?.hoja_gasto_fecha_envio || b?.createdAtLocal || "").trim();
+      return db.localeCompare(da);
+    });
+    return out;
+  }, [sheets, remoteSheets, sheetCtx]);
+
+  const sheetsForNumbering = useMemo(() => {
+    const me = sheetCtx.me;
+    return mergedDisplayedSheets.filter((s) => String(s?.usuario_email || "").trim().toLowerCase() === me);
+  }, [mergedDisplayedSheets, sheetCtx.me]);
 
   const selectedRows = useMemo(() => pending.filter((r) => !!selected[r.id]), [pending, selected]);
   const selectedTotal = useMemo(() => selectedRows.reduce((acc, r) => acc + (r.amount || 0), 0), [selectedRows]);
@@ -475,7 +665,7 @@ export default function ExpenseSheetsScreen({ navigation }) {
       setSending(true);
       const now = new Date();
       const userName = resolvedUserName_(user, profileName);
-      const sheetNumber = nextSheetNumber_(user, now, sheets, userName);
+      const sheetNumber = nextSheetNumber_(user, now, sheetsForNumbering, userName);
       const sheetLocalId = `HG-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(
         2,
         "0"
@@ -552,10 +742,35 @@ export default function ExpenseSheetsScreen({ navigation }) {
       Alert.alert("Impresión en curso", "Ya hay una impresión en curso. Espera a que termine.");
       return;
     }
+    const printKey = String(sheet?.hoja_gasto_id || sheet?.hoja_id_local || sheet?.id || "").trim();
     try {
-      const currentId = String(sheet?.id || "").trim();
-      setPrintingSheetId(currentId || "__printing__");
-      const lines = Array.isArray(sheet?.lineas) ? sheet.lineas : [];
+      setPrintingSheetId(printKey || "__printing__");
+      let sheetForPrint = sheet;
+      let lines = Array.isArray(sheet?.lineas) ? sheet.lineas : [];
+      const sid = String(sheet?.hoja_gasto_id || sheet?.hoja_id_local || sheet?.id || "").trim();
+      if ((!lines || !lines.length) && sid) {
+        try {
+          const detailRes = await sheetsApi.get("hoja_gasto_detalle", {
+            hoja_gasto_id: sid,
+            user_email: String(user?.email || "").trim(),
+          });
+          const detail = detailRes?.data || detailRes || {};
+          const dl = Array.isArray(detail?.lineas) ? detail.lineas : [];
+          if (dl.length) {
+            lines = dl;
+            sheetForPrint = {
+              ...sheet,
+              ...detail,
+              lineas: dl,
+              total_importe: Number(detail?.total_importe ?? sheet?.total_importe ?? sheet?.hoja_gasto_total ?? 0) || 0,
+              usuario_nombre: String(detail?.usuario_nombre || sheet?.usuario_nombre || "").trim(),
+              createdAtLocal: String(detail?.createdAtLocal || detail?.hoja_gasto_fecha_envio || sheet?.createdAtLocal || "").trim(),
+            };
+          }
+        } catch {
+          // se intenta PDF con líneas vacías
+        }
+      }
       const logoDataUri = await getSheetLogoDataUri_();
       const rows = [];
       for (let i = 0; i < 15; i += 1) {
@@ -574,12 +789,12 @@ export default function ExpenseSheetsScreen({ navigation }) {
         })
         .join("");
 
-      const total = Number(sheet?.total_importe || 0);
-      const created = String(sheet?.createdAtLocal || "");
+      const total = Number(sheetForPrint?.total_importe || sheetForPrint?.hoja_gasto_total || 0);
+      const created = String(sheetForPrint?.createdAtLocal || sheetForPrint?.hoja_gasto_fecha_envio || "");
       const createdDate = formatDateEs_(created);
-      const person = personFromSheet_(sheet, user, profileName);
-      const sheetNumber = inferredSheetNumber_(sheet, user, profileName);
-      const sheetOrderText = sheetNumber || String(sheet?.id || sheet?.hoja_id_local || "").trim();
+      const person = personFromSheet_(sheetForPrint, user, profileName);
+      const sheetNumber = inferredSheetNumber_(sheetForPrint, user, profileName);
+      const sheetOrderText = sheetNumber || String(sheetForPrint?.id || sheetForPrint?.hoja_id_local || "").trim();
       const html = `
       <html>
       <body style="font-family: Arial, sans-serif; color:#111; padding:22px;">
@@ -650,6 +865,7 @@ export default function ExpenseSheetsScreen({ navigation }) {
     try {
       await syncService.flushIfOnline();
       await reloadAll();
+      await loadRemoteSheets();
       Alert.alert("Sincronización", "Estado de hojas actualizado.");
     } catch (e) {
       Alert.alert("Error", e?.message || "No se pudo sincronizar.");
@@ -752,21 +968,37 @@ export default function ExpenseSheetsScreen({ navigation }) {
       ))}
       {!pending.length ? <Text style={styles.empty}>No hay gastos de usuario pendientes para reembolso.</Text> : null}
 
-      <Text style={styles.section}>Hojas creadas (local)</Text>
-      {sheets.map((s) => {
+      <Text style={styles.section}>Hojas de gasto (dispositivo y servidor)</Text>
+      {remoteListLoading ? <Text style={styles.meta}>Cargando listado del servidor…</Text> : null}
+      {mergedDisplayedSheets.map((s) => {
         const sync = sheetSyncStatus_(s, outbox);
         const visibleNum = String(s?.num_hoja_gasto || s?.Num_Hoja_Gasto || "").trim();
         const internalId = String(s?.id || s?.hoja_id_local || s?.hoja_gasto_id || "").trim();
+        const rowKey = [...sheetKeysSet_(s)].join("|") || internalId;
+        const printKey = String(s?.hoja_gasto_id || s?.hoja_id_local || s?.id || "").trim();
+        const lineCount = Array.isArray(s.lineas) ? s.lineas.length : Number(s?.lineas_count || 0) || 0;
+        const origin = s?._fromRemoteList ? "Servidor" : "Dispositivo";
         return (
-        <View key={s.id} style={styles.row}>
+        <View key={rowKey} style={styles.row}>
           <Text style={styles.rowTitle}>{visibleNum || internalId}</Text>
+          <Text style={styles.rowSub}>
+            {origin}
+            {String(s?.usuario_nombre || s?.usuario_email || "").trim()
+              ? ` · ${String(s?.usuario_nombre || "").trim() || s.usuario_email}`
+              : ""}
+          </Text>
           {visibleNum && internalId && visibleNum !== internalId ? (
-            <Text style={styles.rowSub}>ID interno: {internalId}</Text>
+            <Text style={styles.rowSub}>ID: {internalId}</Text>
           ) : null}
           <Text style={styles.rowSub}>
-            Estado: {s.estado || "ENVIADA"} · Sync: <Text style={[styles.syncBadge, sync.tone === "ok" ? styles.syncOk : sync.tone === "warn" ? styles.syncWarn : styles.syncErr]}>{sync.text}</Text> · Líneas: {Array.isArray(s.lineas) ? s.lineas.length : 0}
+            Estado: {s.estado || s.hoja_gasto_estado || "ENVIADA"}
+            {s.hoja_gasto_estado_pago ? ` · Pago: ${s.hoja_gasto_estado_pago}` : ""}
+            {" · "}
+            <Text style={[styles.syncBadge, sync.tone === "ok" ? styles.syncOk : sync.tone === "warn" ? styles.syncWarn : styles.syncErr]}>{sync.text}</Text>
+            {" · "}
+            Líneas: {lineCount}
           </Text>
-          <Text style={styles.rowAmount}>{Number(s.total_importe || 0).toFixed(2)} EUR</Text>
+          <Text style={styles.rowAmount}>{Number(s.total_importe || s.hoja_gasto_total || 0).toFixed(2)} EUR</Text>
           <View style={styles.rowActions}>
             <Pressable
               style={[styles.actionBtn, printingSheetId && { opacity: 0.65 }]}
@@ -774,13 +1006,13 @@ export default function ExpenseSheetsScreen({ navigation }) {
               disabled={!!printingSheetId}
             >
               <Text style={styles.actionText}>
-                {printingSheetId === String(s.id || "").trim() ? "Preparando PDF..." : "Compartir PDF"}
+                {printingSheetId === printKey ? "Preparando PDF..." : "Compartir PDF"}
               </Text>
             </Pressable>
           </View>
         </View>
       )})}
-      {!sheets.length ? <Text style={styles.empty}>Aún no hay hojas de gasto.</Text> : null}
+      {!mergedDisplayedSheets.length ? <Text style={styles.empty}>Aún no hay hojas de gasto visibles para tu rol.</Text> : null}
     </ScrollView>
   );
 }

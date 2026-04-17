@@ -314,9 +314,48 @@ async function flushOutboxOnce() {
 
         delete payload.photoLocalUris;
 
-        await sheetsApi.post("mantenimiento_crear", payload, {
-          user_email: payload.responsable_email || payload.usuario_email || "",
-        });
+        if (payload.odometro_local_uri && !payload.odometro_drive_url) {
+          const fileName = `odometro-${uuid()}.jpg`;
+          const url = await uploadImage({
+            localUri: payload.odometro_local_uri,
+            path: `odometro/${payload.vehiclePlate || payload.matricula || "sin_matricula"}/${fileName}`,
+          });
+          payload.odometro_drive_url = url;
+          payload.odometro_drive_file_name = fileName;
+        }
+        delete payload.odometro_local_uri;
+        delete payload.odometroLocalUri;
+
+        payload.coste = Number(payload.coste) || 0;
+        payload.kilometraje = Number(payload.kilometraje) || 0;
+
+        const metaEmail = String(payload.responsable_email || payload.usuario_email || "").trim().toLowerCase();
+        const actions = ["mantenimiento_crear", "mantenimiento_guardar", "mantenimiento_upsert"];
+        let lastMantErr = null;
+        let posted = false;
+        for (let ai = 0; ai < actions.length; ai += 1) {
+          try {
+            await sheetsApi.post(actions[ai], payload, { user_email: metaEmail });
+            posted = true;
+            break;
+          } catch (e) {
+            lastMantErr = e;
+            const msg = String(e?.message || "").toLowerCase();
+            if (
+              msg.includes("no reconocida") ||
+              msg.includes("not recognized") ||
+              msg.includes("unknown action") ||
+              msg.includes("acción no reconocida") ||
+              msg.includes("accion no reconocida")
+            ) {
+              continue;
+            }
+            throw e;
+          }
+        }
+        if (!posted) {
+          throw lastMantErr || new Error("No hay endpoint de mantenimiento reconocido en el servidor.");
+        }
       } else if (job.kind === "vehicle") {
         // Mantén el comportamiento anterior para vehículos (normalmente ya se gestionan en la pantalla de Flota).
         if (!firebaseAvailable || !firestore) throw new Error("Firebase no disponible para sincronizar vehículos.");

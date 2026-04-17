@@ -1,12 +1,24 @@
 // ======================================================================
 // 24_hojas_gasto_list.gs
 // Lista hojas de gasto agrupadas desde pestaña GASTOS.
+//
+// GET solo lectura: no interfiere con la sincronización POST de la app
+// (hoja_gasto_actualizar_gastos / estado, cola outbox). OPERARIO y RESPONSABLE
+// reciben lista filtrada; GESTOR y ADMINISTRACIÓN ven todas.
+//
+// Requiere en el proyecto: getRolUsuarioHojas_ (29_roles_aprobacion_hojas.gs),
+// normalizeEmail_, getMatriculasACargo_, puedeVerHojaGastoResumen_ (14_filtro...).
 // ======================================================================
 
 function apiHojasGastoList(payload) {
   payload = payload || {};
   var user = String(payload.user_email || payload.requester_email || "").trim().toLowerCase();
-  requireRolGestorOrAdministracion_(user);
+  if (!user) throw new Error("Falta user_email");
+  var rol = getRolUsuarioHojas_(user);
+  if (!rol) throw new Error("Usuario no encontrado o sin rol en USUARIOS");
+  if (rol !== "GESTOR" && rol !== "ADMINISTRACION" && rol !== "RESPONSABLE" && rol !== "OPERARIO") {
+    throw new Error("Permisos insuficientes para listar hojas de gasto");
+  }
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName("GASTOS");
@@ -46,6 +58,7 @@ function apiHojasGastoList(payload) {
   var cMetodoPago = col("hoja_gasto_metodo_pago");
   var cRefPago = col("hoja_gasto_referencia_pago");
   var cEmail = col("responsable_email");
+  var cMat = col("matricula");
 
   var grouped = {};
   for (var r = 0; r < rows.length; r++) {
@@ -79,15 +92,39 @@ function apiHojasGastoList(payload) {
         hoja_gasto_metodo_pago: String(val(row, cMetodoPago) || "").trim(),
         hoja_gasto_referencia_pago: String(val(row, cRefPago) || "").trim(),
         lineas_count: 0,
+        _matriculas: {},
       };
     }
+    var mat = String(val(row, cMat) || "").trim().toUpperCase();
+    if (mat) grouped[hojaId]._matriculas[mat] = true;
     grouped[hojaId].lineas_count += 1;
   }
 
-  var out = Object.keys(grouped).map(function(k) { return grouped[k]; });
+  var out = Object.keys(grouped).map(function(k) {
+    return grouped[k];
+  });
   out.sort(function(a, b) {
     return String(b.hoja_gasto_fecha_envio || "").localeCompare(String(a.hoja_gasto_fecha_envio || ""));
   });
-  return out;
+
+  function stripInternal_(item) {
+    var copy = {};
+    for (var key in item) {
+      if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
+      if (key === "_matriculas") continue;
+      copy[key] = item[key];
+    }
+    return copy;
+  }
+
+  if (rol === "GESTOR" || rol === "ADMINISTRACION") {
+    return out.map(stripInternal_);
+  }
+
+  return out
+    .filter(function(item) {
+      return puedeVerHojaGastoResumen_(user, rol, item.usuario_email || "", item._matriculas || {});
+    })
+    .map(stripInternal_);
 }
 

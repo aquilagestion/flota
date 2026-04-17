@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
-set "EXPECTED_DIR=C:\flota\flota_releases"
+set "EXPECTED_DIR=%~dp0flota_releases"
 set "LAST_APK_FILE=%EXPECTED_DIR%\last_apk_path.txt"
 set "EXPECTED_APK="
 

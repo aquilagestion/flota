@@ -24,11 +24,9 @@ Opcional para OCR de odometro por microservicio (PaddleOCR + OpenCV):
 - `EXPO_PUBLIC_ODOMETER_OCR_URL` (ejemplo: `http://192.168.1.50:8080`)
 
 ## Salida local con `build-apk.bat`
-El APK (release) se copiará siempre a `C:\flota\flota_releases` con formato:
-`Gestiflota Version <version_sin_puntos> <yyyyMMdd> <HHmmss>.apk`
+El APK (release) se copia **solo** a `C:\flota\flota_releases` con el nombre `GESTIFLOTA_<expo.version>.apk` (la `expo.version` sale de `app.json`; antes del build se ejecuta `scripts/sync-app-versions-from-app-json.ps1`).
 
-Ejemplo:
-`Gestiflota Version 1_0_0 20260331 110542.apk`
+Ejemplo: `GESTIFLOTA_1.0.5.apk`
 
 ## Flujo recomendado: bundle local y luego Git
 

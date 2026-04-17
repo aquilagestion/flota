@@ -1,21 +1,29 @@
 @echo off
 setlocal
 
-set "EXPECTED_OUTPUT_DIR=C:\flota\flota_releases"
-set "SOURCE_APK=C:\flota\android\app\build\outputs\apk\release\app-release.apk"
+set "ROOT_DIR=%~dp0"
+rem Quitar barra final para rutas consistentes
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+
+set "EXPECTED_OUTPUT_DIR=%ROOT_DIR%\flota_releases"
+set "SOURCE_APK=%ROOT_DIR%\android\app\build\outputs\apk\release\app-release.apk"
 set "LAST_APK_FILE=%EXPECTED_OUTPUT_DIR%\last_apk_path.txt"
 
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content 'C:/flota/app.json' -Raw | ConvertFrom-Json).expo.version"`) do set "APP_VERSION=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%ROOT_DIR%\app.json' -Raw | ConvertFrom-Json).expo.version"`) do set "APP_VERSION=%%i"
 if "%APP_VERSION%"=="" set "APP_VERSION=0.0.0"
-set "APP_VERSION_SAFE=%APP_VERSION:.=_%"
 
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "Get-Date -Format 'yyyyMMdd'"`) do set "BUILD_DATE=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "Get-Date -Format 'HHmmss'"`) do set "BUILD_TIME=%%i"
+rem Nombre fijo: GESTIFLOTA + numero de version (lee app.json expo.version)
+set "OUTPUT_APK=GESTIFLOTA_%APP_VERSION%.apk"
 
-set "OUTPUT_APK=Gestiflota Version %APP_VERSION_SAFE% %BUILD_DATE% %BUILD_TIME%.apk"
+echo [1/3] Sincronizando versiones desde app.json (^>^> %APP_VERSION%^): ayuda, Gradle, package.json...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\sync-app-versions-from-app-json.ps1" -Root "%ROOT_DIR%"
+if errorlevel 1 (
+  echo Error al sincronizar versiones.
+  exit /b 1
+)
 
-echo [1/2] Compilando APK release...
-cd /d C:\flota\android
+echo [2/3] Compilando APK release...
+cd /d "%ROOT_DIR%\android"
 call gradlew.bat assembleRelease
 if errorlevel 1 (
   echo Error compilando APK.
@@ -24,7 +32,7 @@ if errorlevel 1 (
 
 if not exist "%EXPECTED_OUTPUT_DIR%" mkdir "%EXPECTED_OUTPUT_DIR%"
 
-echo [2/2] Copiando APK a "%EXPECTED_OUTPUT_DIR%"...
+echo [3/3] Copiando APK a "%EXPECTED_OUTPUT_DIR%" (unico destino)...
 copy /Y "%SOURCE_APK%" "%EXPECTED_OUTPUT_DIR%\%OUTPUT_APK%" >nul
 if errorlevel 1 (
   echo No se pudo copiar el APK a "%EXPECTED_OUTPUT_DIR%".

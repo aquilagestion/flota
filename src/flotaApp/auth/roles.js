@@ -49,6 +49,12 @@ export function canPayExpenseSheets(role) {
   return normalizeRole(role) === ROLES.ADMINISTRACION;
 }
 
+/** Listar y resolver solicitudes de rol RESPONSABLE (Apps Script). */
+export function canManageResponsableSolicitudes(role) {
+  const r = normalizeRole(role);
+  return r === ROLES.GESTOR || r === ROLES.ADMINISTRACION;
+}
+
 export function roleLabel(role) {
   return normalizeRole(role);
 }

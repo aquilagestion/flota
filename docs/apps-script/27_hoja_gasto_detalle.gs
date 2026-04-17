@@ -1,12 +1,20 @@
 // ======================================================================
 // 27_hoja_gasto_detalle.gs
 // Devuelve detalle de una hoja de gasto (lineas) desde GASTOS.
+//
+// Misma regla de visibilidad que apiHojasGastoList (GET; no afecta POST sync).
+// Requiere: getRolUsuarioHojas_, puedeVerHojaGastoResumen_.
 // ======================================================================
 
 function apiHojaGastoDetalle(payload) {
   payload = payload || {};
   var user = String(payload.user_email || payload.requester_email || "").trim().toLowerCase();
-  requireRolGestorOrAdministracion_(user);
+  if (!user) throw new Error("Falta user_email");
+  var rol = getRolUsuarioHojas_(user);
+  if (!rol) throw new Error("Usuario no encontrado o sin rol en USUARIOS");
+  if (rol !== "GESTOR" && rol !== "ADMINISTRACION" && rol !== "RESPONSABLE" && rol !== "OPERARIO") {
+    throw new Error("Permisos insuficientes");
+  }
 
   var hojaId = String(payload.hoja_gasto_id || payload.hoja_id_local || "").trim();
   if (!hojaId) throw new Error("Falta campo: hoja_gasto_id / hoja_id_local");
@@ -141,6 +149,7 @@ function apiHojaGastoDetalle(payload) {
   var usuarioNombre = "";
   var total = 0;
   var fechaEnvio = "";
+  var matMap = {};
 
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r];
@@ -150,7 +159,13 @@ function apiHojaGastoDetalle(payload) {
     if (!usuarioEmail) usuarioEmail = String(val(row, "responsable_email") || "").trim().toLowerCase();
     if (!fechaEnvio) fechaEnvio = String(val(row, "hoja_gasto_fecha_envio") || "").trim();
     total = Number(val(row, "hoja_gasto_total") || total || 0) || total;
+    var mat = String(val(row, "matricula") || "").trim().toUpperCase();
+    if (mat) matMap[mat] = true;
     outRows.push(detailFromRow(row));
+  }
+
+  if (!puedeVerHojaGastoResumen_(user, rol, usuarioEmail, matMap)) {
+    throw new Error("No autorizado para ver esta hoja de gasto");
   }
 
   try {

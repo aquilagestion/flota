@@ -13,6 +13,8 @@ import UsersAdminScreen from "../screens/UsersAdminScreen";
 import RequestsScreen from "../screens/RequestsScreen";
 import ExpenseSheetsScreen from "../screens/ExpenseSheetsScreen";
 import ApprovalsScreen from "../screens/ApprovalsScreen";
+import ResponsableSolicitudesScreen from "../screens/ResponsableSolicitudesScreen";
+import HelpScreen from "../screens/HelpScreen";
 import VehicleEditScreen from "../screens/VehicleEditScreen";
 import VehicleCreateScreen from "../screens/VehicleCreateScreen";
 import UserEditScreen from "../screens/UserEditScreen";
@@ -77,10 +79,12 @@ export default function AppNavigator() {
       ) : (
         <>
           <Stack.Screen name="Menu" component={MenuScreen} />
+          <Stack.Screen name="Ayuda" component={HelpScreen} />
           <Stack.Screen name="Vehiculos" component={VehiclesScreen} />
           <Stack.Screen name="VehiculoNuevo" component={VehicleCreateScreen} />
           <Stack.Screen name="VehiculoEditar" component={VehicleEditScreen} />
           <Stack.Screen name="Aprobaciones" component={ApprovalsScreen} />
+          <Stack.Screen name="SolicitudesResponsable" component={ResponsableSolicitudesScreen} />
           <Stack.Screen name="Usuarios" component={UsersAdminScreen} />
           <Stack.Screen name="UsuarioEditar" component={UserEditScreen} />
           {!administracion ? <Stack.Screen name="Gasto" component={ExpenseFormScreen} /> : null}

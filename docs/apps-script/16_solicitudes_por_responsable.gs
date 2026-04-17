@@ -1,16 +1,158 @@
 // ======================================================================
 // 16_solicitudes_por_responsable.gs
-// Refuerzo backend para solicitudes:
-// - RESPONSABLE ve/gestiona solicitudes de vehículos a su cargo
-// - GESTOR ve/gestiona todas
-// - OPERARIO solo sus propias solicitudes (consulta), sin resolver
+// Refuerzo backend para solicitudes de uso (hoja SOLICITUDES).
+//
+// Norma de negocio: aviso de nueva solicitud a los correos de la columna O de FLOTA
+// solo si cada correo figura en USUARIOS (col. A) con rol RESPONSABLE (col. C).
+// Resolución: correo al solicitante (cabeceras tipo trabajador_email / email_solicitante; no se usa user_email del POST).
+//
+// Técnico en este script:
+// - RESPONSABLE: ve solicitudes propias + las de matrículas a su cargo (getMatriculasACargo_).
+// - GESTOR: ve todas (apoyo / supervisión; si no quieres que resuelva, restringe en router).
+// - OPERARIO: solo sus propias solicitudes (consulta).
 //
 // NOTA: Reemplaza tus funciones apiSolicitudList / apiSolicitudResolver
 // por estas versiones si quieres blindaje completo en backend.
 // ======================================================================
+// Requiere en 14_filtro_backend_visibilidad.gs: headerIndexCI_, normalizeEmail_,
+// normalizeRolSegunUsuarios_, getMatriculasACargo_.
+// Requiere en 04_solicitudes.gs: parseFechaHoraDesdeFila_, haySolapeAprobado_ (aprobación sin solapes).
+// Tras resolver: correo al solicitante vía enviarCorreoResolucionSolicitudUso_ en 19_solicitud_uso_crear.gs.
+// Email del solicitante: ver emailSolicitanteDesdeRowSolicitud_ (columna D solo si contiene un correo válido).
+
+/** Columna K (11.ª) = índice 10: muchos libros guardan aquí el estado aunque la cabecera no sea "estado". */
+var SOLICITUDES_COL_ESTADO_K0_ = 10;
+
+/** Columna D (4.ª) = índice 3 — email del solicitante en el libro estándar. */
+var SOLICITUDES_COL_D_EMAIL_SOLICITANTE_0_ = 3;
+/** Columna L (12.ª) = índice 11 — motivo_rechazo en el libro estándar. */
+var SOLICITUDES_COL_L_MOTIVO_RECHAZO_0_ = 11;
+/** Columna N (14.ª) = índice 13 — nombre de quien resuelve en el libro estándar. */
+var SOLICITUDES_COL_N_RESUELTO_POR_NOMBRE_0_ = 13;
+
+function nombreUsuarioDesdeEmail_(email) {
+  var em = normalizeEmail_(email);
+  if (!looksLikeEmail_(em)) return "";
+  try {
+    var sh = getSheet("USUARIOS");
+    var all = sh.getDataRange().getValues();
+    if (!all || all.length < 2) return "";
+    var headers = all[0].map(function (h) {
+      return String(h || "")
+        .trim()
+        .replace(/^\uFEFF/, "");
+    });
+    var idxEm = headerIndexCI_(headers, "email");
+    var idxNombre = headerIndexCI_(headers, "nombre");
+    if (idxEm < 0 || idxNombre < 0) return "";
+    for (var i = 1; i < all.length; i++) {
+      if (normalizeEmail_(all[i][idxEm]) !== em) continue;
+      return String(all[i][idxNombre] || "").trim();
+    }
+  } catch (e) {}
+  return "";
+}
 
 function getAllSolicitudesRows_() {
-  return readSheetObjects_("SOLICITUDES");
+  var sh = getSheet("SOLICITUDES");
+  var all = sh.getDataRange().getValues();
+  if (!all || all.length < 2) return [];
+  var headers = all[0].map(function (h) {
+    return String(h || "")
+      .trim()
+      .replace(/^\uFEFF/, "");
+  });
+  var idxEstadoHeader = headerIndexCI_(headers, "estado");
+  var idxEstado = idxEstadoHeader >= 0 ? idxEstadoHeader : SOLICITUDES_COL_ESTADO_K0_;
+  var out = [];
+  for (var i = 1; i < all.length; i++) {
+    var row = all[i];
+    var obj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var key = headers[c];
+      if (!key) key = "COL_" + c;
+      obj[key] = row[c];
+    }
+    var es = "";
+    if (idxEstado >= 0 && idxEstado < row.length) {
+      es = String(row[idxEstado] != null ? row[idxEstado] : "").trim();
+    }
+    if (!es && SOLICITUDES_COL_ESTADO_K0_ < row.length && SOLICITUDES_COL_ESTADO_K0_ !== idxEstado) {
+      es = String(row[SOLICITUDES_COL_ESTADO_K0_] != null ? row[SOLICITUDES_COL_ESTADO_K0_] : "").trim();
+    }
+    if (es) obj.estado = es;
+    var trMail = emailSolicitanteDesdeRowSolicitud_(headers, row, {});
+    if (trMail) obj.trabajador_email = trMail;
+    out.push(obj);
+  }
+  return out;
+}
+
+/** Cabeceras en la hoja pueden variar en mayúsculas/espacios (p. ej. "Estado", "estado "). */
+function fieldFromRowCI_(r, canonical) {
+  if (!r) return "";
+  var want = String(canonical || "").toLowerCase();
+  for (var k in r) {
+    if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+    if (String(k).trim().toLowerCase() === want) return r[k];
+  }
+  return "";
+}
+
+/**
+ * Email del solicitante para avisos de resolución.
+ * - Nunca usa body.user_email (en POST es quien ejecuta: gestor/responsable).
+ * - Cabeceras alternativas y escaneo por nombre de columna (tilde/espacios vía headerKeyNormalize_ en 14).
+ */
+function emailSolicitanteDesdeRowSolicitud_(headers, row, payloadOpt) {
+  payloadOpt = payloadOpt || {};
+  function cellAt_(idx) {
+    if (idx < 0 || !row || idx >= row.length) return "";
+    return normalizeEmail_(String(row[idx] != null ? row[idx] : ""));
+  }
+  var fromPayload = normalizeEmail_(
+    String(payloadOpt.trabajador_email || payloadOpt.solicitante_email || "").trim()
+  );
+  if (looksLikeEmail_(fromPayload)) return fromPayload;
+
+  var names = [
+    "trabajador_email",
+    "email_solicitante",
+    "correo_solicitante",
+    "email del solicitante",
+    "correo del solicitante",
+    "usuario_email",
+    "email_trabajador",
+    "mail_trabajador",
+    "correo_trabajador",
+  ];
+  for (var n = 0; n < names.length; n++) {
+    var ix = headerIndexCI_(headers, names[n]);
+    var em = cellAt_(ix);
+    if (looksLikeEmail_(em)) return em;
+  }
+  for (var c = 0; c < headers.length; c++) {
+    var hk = headerKeyNormalize_(headers[c]);
+    if (!hk) continue;
+    var mailish =
+      hk.indexOf("mail") >= 0 ||
+      hk.indexOf("email") >= 0 ||
+      hk.indexOf("correo") >= 0;
+    if (!mailish) continue;
+    var personish =
+      hk.indexOf("trabajador") >= 0 ||
+      hk.indexOf("solicitante") >= 0 ||
+      hk.indexOf("usuario") >= 0 ||
+      hk.indexOf("empleado") >= 0;
+    if (!personish) continue;
+    var em2 = cellAt_(c);
+    if (looksLikeEmail_(em2)) return em2;
+  }
+  if (row.length > SOLICITUDES_COL_D_EMAIL_SOLICITANTE_0_) {
+    var d = cellAt_(SOLICITUDES_COL_D_EMAIL_SOLICITANTE_0_);
+    if (looksLikeEmail_(d)) return d;
+  }
+  return "";
 }
 
 function apiSolicitudList(payload) {
@@ -22,20 +164,34 @@ function apiSolicitudList(payload) {
   var estado = String(payload.estado || "").trim().toUpperCase();
 
   var rows = getAllSolicitudesRows_();
-  var assigned = rol === "RESPONSABLE" ? getMatriculasACargo_(requester) : {};
+  var assigned = getMatriculasACargo_(requester);
+  var hasAssignedMatriculas = false;
+  for (var mk in assigned) {
+    if (!Object.prototype.hasOwnProperty.call(assigned, mk)) continue;
+    if (assigned[mk]) {
+      hasAssignedMatriculas = true;
+      break;
+    }
+  }
+  // Compatibilidad operativa: si USUARIOS no marca RESPONSABLE pero FLOTA sí lo tiene a cargo,
+  // se comporta como responsable para visibilidad de solicitudes.
+  var effectiveResponsable = rol === "RESPONSABLE" || (rol === "OPERARIO" && hasAssignedMatriculas);
 
   return rows.filter(function (r) {
-    var rEstado = String(r.estado || "").trim().toUpperCase();
+    var rEstado = String(fieldFromRowCI_(r, "estado") || r.estado || "").trim().toUpperCase();
     if (estado && rEstado !== estado) return false;
 
-    if (rol === "GESTOR") return true;
+    if (rol === "GESTOR" || rol === "ADMINISTRACION") return true;
 
-    var trabajador = normalizeEmail_(r.trabajador_email || r.usuario_email || "");
-    if (rol === "OPERARIO") return trabajador === requester;
+    var trabajador = normalizeEmail_(
+      fieldFromRowCI_(r, "trabajador_email") || r.trabajador_email || r.usuario_email || ""
+    );
+    if (rol === "OPERARIO" && !effectiveResponsable) return trabajador === requester;
 
-    // RESPONSABLE
+    // RESPONSABLE (o equivalente por matrículas asignadas en FLOTA)
+    if (!effectiveResponsable) return false;
     if (trabajador === requester) return true;
-    var mat = String(r.matricula || "").trim().toUpperCase();
+    var mat = String(fieldFromRowCI_(r, "matricula") || r.matricula || "").trim().toUpperCase();
     return !!assigned[mat];
   });
 }
@@ -46,7 +202,17 @@ function apiSolicitudResolver(payload) {
     payload.resuelto_por_email || payload.user_email || payload.requester_email || ""
   );
   var rol = normalizeRolSegunUsuarios_(requester);
-  if (rol !== "GESTOR" && rol !== "RESPONSABLE") {
+  var assigned = getMatriculasACargo_(requester);
+  var hasAssignedMatriculas = false;
+  for (var mk in assigned) {
+    if (!Object.prototype.hasOwnProperty.call(assigned, mk)) continue;
+    if (assigned[mk]) {
+      hasAssignedMatriculas = true;
+      break;
+    }
+  }
+  var canResolveByAssigned = rol === "RESPONSABLE" || (rol === "OPERARIO" && hasAssignedMatriculas);
+  if (rol !== "GESTOR" && !canResolveByAssigned) {
     throw new Error("No autorizado para resolver solicitudes");
   }
 
@@ -60,30 +226,85 @@ function apiSolicitudResolver(payload) {
   var sh = getSheet("SOLICITUDES");
   var all = sh.getDataRange().getValues();
   if (!all || all.length < 2) throw new Error("No hay solicitudes");
-  var headers = all[0].map(String);
+  var headers = all[0].map(function (h) {
+    return String(h || "")
+      .trim()
+      .replace(/^\uFEFF/, "");
+  });
 
-  var idxId = headers.indexOf("id_solicitud");
-  var idxEstado = headers.indexOf("estado");
-  var idxMat = headers.indexOf("matricula");
-  var idxResuelto = headers.indexOf("resuelto_por_email");
-  var idxFecha = headers.indexOf("fecha_resolucion");
-  if (idxId < 0 || idxEstado < 0) throw new Error("Faltan headers id_solicitud/estado en SOLICITUDES");
-
-  var assigned = rol === "RESPONSABLE" ? getMatriculasACargo_(requester) : {};
+  var idxId = headerIndexCI_(headers, "id_solicitud");
+  var idxEstado = headerIndexCI_(headers, "estado");
+  if (idxEstado < 0) idxEstado = SOLICITUDES_COL_ESTADO_K0_;
+  var idxMat = headerIndexCI_(headers, "matricula");
+  var idxResuelto = headerIndexCI_(headers, "resuelto_por_email");
+  var idxFecha = headerIndexCI_(headers, "fecha_resolucion");
+  var idxMotRech = headerIndexCI_(headers, "motivo_rechazo");
+  if (idxMotRech < 0) idxMotRech = SOLICITUDES_COL_L_MOTIVO_RECHAZO_0_;
+  var idxResueltoNombre = headerIndexCI_(headers, "resuelto_por_nombre");
+  if (idxResueltoNombre < 0) idxResueltoNombre = SOLICITUDES_COL_N_RESUELTO_POR_NOMBRE_0_;
+  var idxFechaIni = headerIndexCI_(headers, "fecha_inicio");
+  if (idxFechaIni < 0) idxFechaIni = headerIndexCI_(headers, "fecha_desde");
+  var idxHoraIni = headerIndexCI_(headers, "hora_inicio");
+  if (idxHoraIni < 0) idxHoraIni = headerIndexCI_(headers, "hora_desde");
+  var idxFechaFin = headerIndexCI_(headers, "fecha_fin");
+  if (idxFechaFin < 0) idxFechaFin = headerIndexCI_(headers, "fecha_hasta");
+  var idxHoraFin = headerIndexCI_(headers, "hora_fin");
+  if (idxHoraFin < 0) idxHoraFin = headerIndexCI_(headers, "hora_hasta");
+  if (idxId < 0) throw new Error("Falta cabecera id_solicitud en SOLICITUDES");
 
   for (var r = 1; r < all.length; r++) {
     var currId = String(all[r][idxId] || "").trim();
     if (currId !== id) continue;
 
-    if (rol === "RESPONSABLE") {
-      var mat = idxMat >= 0 ? String(all[r][idxMat] || "").trim().toUpperCase() : "";
-      if (!assigned[mat]) throw new Error("Solo puedes resolver solicitudes de vehículos a tu cargo");
+    var matRow = idxMat >= 0 ? String(all[r][idxMat] || "").trim().toUpperCase() : "";
+    if (canResolveByAssigned && rol !== "GESTOR") {
+      if (!assigned[matRow]) throw new Error("Solo puedes resolver solicitudes de vehículos a tu cargo");
+    }
+
+    if (estado === "APROBADA") {
+      var iniR = parseFechaHoraDesdeFila_(idxFechaIni >= 0 ? all[r][idxFechaIni] : "", idxHoraIni >= 0 ? all[r][idxHoraIni] : "");
+      var finR = parseFechaHoraDesdeFila_(idxFechaFin >= 0 ? all[r][idxFechaFin] : "", idxHoraFin >= 0 ? all[r][idxHoraFin] : "");
+      if (!iniR || !finR || !matRow) throw new Error("Solicitud con fecha/hora/matrícula inválida");
+      if (iniR >= finR) throw new Error("Rango de fecha/hora inválido en solicitud");
+      if (haySolapeAprobado_(matRow, iniR, finR, id)) {
+        throw new Error("Vehículo no disponible en ese rango");
+      }
     }
 
     sh.getRange(r + 1, idxEstado + 1).setValue(estado);
     if (idxResuelto >= 0) sh.getRange(r + 1, idxResuelto + 1).setValue(requester);
+    if (idxResueltoNombre >= 0 && idxResueltoNombre < headers.length) {
+      var nombreRes = nombreUsuarioDesdeEmail_(requester) || requester;
+      sh.getRange(r + 1, idxResueltoNombre + 1).setValue(nombreRes);
+    }
     if (idxFecha >= 0) sh.getRange(r + 1, idxFecha + 1).setValue(normalizeDateDMYCell_(new Date()));
-    return { id_solicitud: id, estado: estado };
+    var mr = String(payload.motivo_rechazo || "").trim();
+    if (estado === "RECHAZADA" && idxMotRech >= 0 && idxMotRech < headers.length) {
+      sh.getRange(r + 1, idxMotRech + 1).setValue(mr);
+    }
+
+    var trabTo = emailSolicitanteDesdeRowSolicitud_(headers, all[r], payload);
+    var mailRes = { sent: false, reason: "" };
+    try {
+      mailRes = enviarCorreoResolucionSolicitudUso_({
+        solicitante_email: trabTo,
+        matricula: matRow,
+        estado: estado,
+        resuelto_por_email: requester,
+        id_solicitud: id,
+        motivo_rechazo: mr,
+      });
+    } catch (eMail) {
+      mailRes = { sent: false, reason: String(eMail && eMail.message ? eMail.message : eMail) };
+    }
+
+    return {
+      id_solicitud: id,
+      estado: estado,
+      email_solicitante_enviado: mailRes.sent,
+      email_solicitante_destino: trabTo,
+      email_solicitante_aviso: mailRes.sent ? "ok" : String(mailRes.reason || ""),
+    };
   }
 
   throw new Error("No existe la solicitud");

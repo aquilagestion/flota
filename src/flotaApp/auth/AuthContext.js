@@ -516,6 +516,35 @@ export function AuthProvider({ children }) {
         await saveLocalUser_(null);
         await saveCachedRole(null);
       },
+      /** Relee USUARIOS (útil tras aprobación de rol RESPONSABLE sin cerrar sesión). */
+      async syncRoleFromUsersSheet() {
+        const email = String(user?.email || "").trim().toLowerCase();
+        if (!email) return;
+        try {
+          const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
+          if (!sheetUser || !sheetUser.activo) return;
+          const next = normalizeRole(sheetUser.role);
+          if (next === normalizeRole(role)) return;
+          setRole(next);
+          await saveCachedRole(next);
+          const lu = await loadLocalUser_();
+          if (lu && String(lu.email || "").trim().toLowerCase() === email) {
+            await saveLocalUser_({ ...lu, role: next, uid: lu.uid || `local-${email}` });
+          }
+          if (firebaseAvailable && firebaseAuth?.currentUser) {
+            const fu = firebaseAuth.currentUser;
+            if (String(fu.email || "").trim().toLowerCase() === email && firestore) {
+              try {
+                await setDoc(doc(firestore, "users", fu.uid), { role: next, updatedAt: serverTimestamp() }, { merge: true });
+              } catch {
+                // silent
+              }
+            }
+          }
+        } catch {
+          // silent
+        }
+      },
       async changePassword(currentPassword, newPassword) {
         const currentPwd = String(currentPassword || "");
         const nextPwd = String(newPassword || "");
