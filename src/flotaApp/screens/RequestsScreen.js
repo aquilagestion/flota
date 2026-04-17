@@ -73,9 +73,9 @@ function parseItem_(x) {
       .trim()
       .toLowerCase(),
     trabajador_nombre: String(readFieldCI_(x, "trabajador_nombre") ?? x?.trabajador_nombre ?? x?.usuario_nombre ?? "").trim(),
-    fecha_inicio: fechaInicio,
+    fecha_inicio: normalizeDateToDmy_(fechaInicio),
     hora_inicio: horaInicio,
-    fecha_fin: fechaFin,
+    fecha_fin: normalizeDateToDmy_(fechaFin),
     hora_fin: horaFin,
     motivo: String(readFieldCI_(x, "motivo") ?? x?.motivo ?? "").trim(),
     motivo_rechazo: String(readFieldCI_(x, "motivo_rechazo") ?? x?.motivo_rechazo ?? "").trim(),
@@ -132,6 +132,23 @@ function formatYmdToEsDmy(ymd) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw || "—";
   const [y, m, d] = raw.split("-");
   return `${d}/${m}/${y}`;
+}
+
+function normalizeDateToDmy_(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return formatYmdToEsDmy(raw);
+  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const p1 = Number(m[1]);
+    const p2 = Number(m[2]);
+    const yyyy = m[3];
+    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
+      return `${String(p2).padStart(2, "0")}/${String(p1).padStart(2, "0")}/${yyyy}`;
+    }
+    return `${String(p1).padStart(2, "0")}/${String(p2).padStart(2, "0")}/${yyyy}`;
+  }
+  return raw;
 }
 
 /** Convierte yyyy-mm-dd a dd/mm/yyyy para el payload del servidor si hace falta. */

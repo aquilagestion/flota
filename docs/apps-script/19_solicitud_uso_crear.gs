@@ -592,12 +592,49 @@ function htmlResponseSolicitudDesdeCorreo_(title, message, ok) {
   return HtmlService.createHtmlOutput(html).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function htmlFormularioMotivoRechazoDesdeCorreo_(params) {
+  params = params || {};
+  var id = escapeHtmlText_(String(params.id_solicitud || "").trim());
+  var resolver = escapeHtmlText_(normalizeEmail_(params.resolver_email || ""));
+  var token = escapeHtmlText_(String(params.token || "").trim());
+  var actionUrl = escapeHtmlText_(getScriptWebAppUrl_() || "");
+  var html =
+    "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" +
+    "<title>Motivo de rechazo</title></head><body style='font-family:Arial,sans-serif;background:#101827;color:#f2f6ff;padding:18px;'>" +
+    "<div style='max-width:700px;margin:0 auto;background:#1a2233;border:1px solid #2f3f58;border-radius:12px;padding:18px;'>" +
+    "<h2 style='margin-top:0;color:#c0392b'>Indicar motivo de rechazo</h2>" +
+    "<p>ID solicitud: <b>" +
+    id +
+    "</b></p>" +
+    "<form method='get' action='" +
+    actionUrl +
+    "'>" +
+    "<input type='hidden' name='action' value='solicitud_resolver_desde_email'/>" +
+    "<input type='hidden' name='id_solicitud' value='" +
+    id +
+    "'/>" +
+    "<input type='hidden' name='estado' value='RECHAZADA'/>" +
+    "<input type='hidden' name='resolver_email' value='" +
+    resolver +
+    "'/>" +
+    "<input type='hidden' name='token' value='" +
+    token +
+    "'/>" +
+    "<label for='motivo' style='display:block;font-weight:700;margin-bottom:8px;'>Motivo (obligatorio)</label>" +
+    "<textarea id='motivo' name='motivo_rechazo' required rows='5' style='width:100%;padding:10px;border-radius:8px;border:1px solid #4b5c79;background:#0f1725;color:#fff;'></textarea>" +
+    "<button type='submit' style='margin-top:12px;padding:10px 14px;border:0;border-radius:8px;background:#b71c1c;color:#fff;font-weight:700;cursor:pointer;'>Confirmar rechazo</button>" +
+    "</form>" +
+    "</div></body></html>";
+  return HtmlService.createHtmlOutput(html).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 function resolverSolicitudDesdeCorreo_(params) {
   params = params || {};
   var id = String(params.id_solicitud || "").trim();
   var estado = String(params.estado || "").trim().toUpperCase();
   var resolver = normalizeEmail_(params.resolver_email || "");
   var token = String(params.token || "").trim();
+  var motivoRechazo = String(params.motivo_rechazo || "").trim();
   if (!id || !resolver || !token) {
     return htmlResponseSolicitudDesdeCorreo_("Acción inválida", "Faltan parámetros obligatorios para resolver la solicitud.", false);
   }
@@ -608,12 +645,20 @@ function resolverSolicitudDesdeCorreo_(params) {
   if (!expected || token !== expected) {
     return htmlResponseSolicitudDesdeCorreo_("Token inválido", "El enlace no es válido o ha sido manipulado.", false);
   }
+  if (estado === "RECHAZADA" && !motivoRechazo) {
+    return htmlFormularioMotivoRechazoDesdeCorreo_({
+      id_solicitud: id,
+      resolver_email: resolver,
+      token: token,
+    });
+  }
   try {
     apiSolicitudResolver({
       id_solicitud: id,
       estado: estado,
       resuelto_por_email: resolver,
       user_email: resolver,
+      motivo_rechazo: motivoRechazo,
     });
     return htmlResponseSolicitudDesdeCorreo_(
       "Solicitud " + estado,

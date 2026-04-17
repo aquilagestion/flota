@@ -81,6 +81,7 @@ function doGet(e) {
         estado: e.parameter.estado || "",
         resolver_email: e.parameter.resolver_email || "",
         token: e.parameter.token || "",
+        motivo_rechazo: e.parameter.motivo_rechazo || "",
       });
       logApi_(action, "GET", user, "success", "OK");
       return out;

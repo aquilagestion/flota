@@ -53,6 +53,87 @@ function nombreUsuarioDesdeEmail_(email) {
   return "";
 }
 
+function fechaSalidaSolicitud_(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return normalizeDateDMYCell_(v);
+  if (typeof v === "number" && isFinite(v)) {
+    var d = sheetsSerialToDateTime_(v);
+    if (d && !isNaN(d.getTime())) return normalizeDateDMYCell_(d);
+  }
+  var raw = String(v == null ? "" : v).trim();
+  if (!raw) return "";
+  var m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    var p1 = Number(m[1]);
+    var p2 = Number(m[2]);
+    var yyyy = m[3];
+    // Si viene estilo MM/dd/yyyy (p2 > 12), invertir a dd/MM/yyyy.
+    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
+      return String(p2).padStart(2, "0") + "/" + String(p1).padStart(2, "0") + "/" + yyyy;
+    }
+    return String(p1).padStart(2, "0") + "/" + String(p2).padStart(2, "0") + "/" + yyyy;
+  }
+  var mIso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (mIso) {
+    return mIso[3] + "/" + mIso[2] + "/" + mIso[1];
+  }
+  return raw;
+}
+
+function horaSalidaSolicitud_(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, CFG.TIMEZONE, "HH:mm");
+  }
+  if (typeof v === "number" && isFinite(v) && v >= 0 && v < 1) {
+    var mins = Math.round(v * 24 * 60);
+    var hh = Math.floor(mins / 60);
+    var mm = mins % 60;
+    return String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
+  }
+  return String(v == null ? "" : v).trim();
+}
+
+function findSolapeAprobadoEnMismaHoja_(all, headers, matricula, ini, fin, excludeId) {
+  var mat = String(matricula || "").trim().toUpperCase();
+  var exc = String(excludeId || "").trim();
+  if (!mat || !ini || !fin) return null;
+
+  var idxId = headerIndexCI_(headers, "id_solicitud");
+  var idxEstado = headerIndexCI_(headers, "estado");
+  if (idxEstado < 0) idxEstado = SOLICITUDES_COL_ESTADO_K0_;
+  var idxMat = headerIndexCI_(headers, "matricula");
+  var idxFechaIni = headerIndexCI_(headers, "fecha_inicio");
+  if (idxFechaIni < 0) idxFechaIni = headerIndexCI_(headers, "fecha_desde");
+  var idxHoraIni = headerIndexCI_(headers, "hora_inicio");
+  if (idxHoraIni < 0) idxHoraIni = headerIndexCI_(headers, "hora_desde");
+  var idxFechaFin = headerIndexCI_(headers, "fecha_fin");
+  if (idxFechaFin < 0) idxFechaFin = headerIndexCI_(headers, "fecha_hasta");
+  var idxHoraFin = headerIndexCI_(headers, "hora_fin");
+  if (idxHoraFin < 0) idxHoraFin = headerIndexCI_(headers, "hora_hasta");
+
+  for (var r = 1; r < all.length; r++) {
+    var row = all[r];
+    var id = idxId >= 0 ? String(row[idxId] || "").trim() : "";
+    if (exc && id === exc) continue;
+    var est = idxEstado >= 0 && idxEstado < row.length ? String(row[idxEstado] || "").trim().toUpperCase() : "";
+    if (est !== "APROBADA") continue;
+    var matRow = idxMat >= 0 ? String(row[idxMat] || "").trim().toUpperCase() : "";
+    if (matRow !== mat) continue;
+    var rIni = parseFechaHoraDesdeFila_(idxFechaIni >= 0 ? row[idxFechaIni] : "", idxHoraIni >= 0 ? row[idxHoraIni] : "");
+    var rFin = parseFechaHoraDesdeFila_(idxFechaFin >= 0 ? row[idxFechaFin] : "", idxHoraFin >= 0 ? row[idxHoraFin] : "");
+    if (!rIni || !rFin) continue;
+    if (ini < rFin && fin > rIni) {
+      return {
+        id_solicitud: id,
+        fecha_inicio: idxFechaIni >= 0 ? String(row[idxFechaIni] || "").trim() : "",
+        hora_inicio: idxHoraIni >= 0 ? String(row[idxHoraIni] || "").trim() : "",
+        fecha_fin: idxFechaFin >= 0 ? String(row[idxFechaFin] || "").trim() : "",
+        hora_fin: idxHoraFin >= 0 ? String(row[idxHoraFin] || "").trim() : "",
+      };
+    }
+  }
+  return null;
+}
+
 function getAllSolicitudesRows_() {
   var sh = getSheet("SOLICITUDES");
   var all = sh.getDataRange().getValues();
@@ -64,6 +145,14 @@ function getAllSolicitudesRows_() {
   });
   var idxEstadoHeader = headerIndexCI_(headers, "estado");
   var idxEstado = idxEstadoHeader >= 0 ? idxEstadoHeader : SOLICITUDES_COL_ESTADO_K0_;
+  var idxFechaIni = headerIndexCI_(headers, "fecha_inicio");
+  if (idxFechaIni < 0) idxFechaIni = headerIndexCI_(headers, "fecha_desde");
+  var idxHoraIni = headerIndexCI_(headers, "hora_inicio");
+  if (idxHoraIni < 0) idxHoraIni = headerIndexCI_(headers, "hora_desde");
+  var idxFechaFin = headerIndexCI_(headers, "fecha_fin");
+  if (idxFechaFin < 0) idxFechaFin = headerIndexCI_(headers, "fecha_hasta");
+  var idxHoraFin = headerIndexCI_(headers, "hora_fin");
+  if (idxHoraFin < 0) idxHoraFin = headerIndexCI_(headers, "hora_hasta");
   var out = [];
   for (var i = 1; i < all.length; i++) {
     var row = all[i];
@@ -81,6 +170,10 @@ function getAllSolicitudesRows_() {
       es = String(row[SOLICITUDES_COL_ESTADO_K0_] != null ? row[SOLICITUDES_COL_ESTADO_K0_] : "").trim();
     }
     if (es) obj.estado = es;
+    if (idxFechaIni >= 0 && idxFechaIni < row.length) obj.fecha_inicio = fechaSalidaSolicitud_(row[idxFechaIni]);
+    if (idxHoraIni >= 0 && idxHoraIni < row.length) obj.hora_inicio = horaSalidaSolicitud_(row[idxHoraIni]);
+    if (idxFechaFin >= 0 && idxFechaFin < row.length) obj.fecha_fin = fechaSalidaSolicitud_(row[idxFechaFin]);
+    if (idxHoraFin >= 0 && idxHoraFin < row.length) obj.hora_fin = horaSalidaSolicitud_(row[idxHoraFin]);
     var trMail = emailSolicitanteDesdeRowSolicitud_(headers, row, {});
     if (trMail) obj.trabajador_email = trMail;
     out.push(obj);
@@ -242,6 +335,8 @@ function apiSolicitudResolver(payload) {
   if (idxMotRech < 0) idxMotRech = SOLICITUDES_COL_L_MOTIVO_RECHAZO_0_;
   var idxResueltoNombre = headerIndexCI_(headers, "resuelto_por_nombre");
   if (idxResueltoNombre < 0) idxResueltoNombre = SOLICITUDES_COL_N_RESUELTO_POR_NOMBRE_0_;
+  var idxTrabEmail = headerIndexCI_(headers, "trabajador_email");
+  var idxTrabNombre = headerIndexCI_(headers, "trabajador_nombre");
   var idxFechaIni = headerIndexCI_(headers, "fecha_inicio");
   if (idxFechaIni < 0) idxFechaIni = headerIndexCI_(headers, "fecha_desde");
   var idxHoraIni = headerIndexCI_(headers, "hora_inicio");
@@ -255,6 +350,12 @@ function apiSolicitudResolver(payload) {
   for (var r = 1; r < all.length; r++) {
     var currId = String(all[r][idxId] || "").trim();
     if (currId !== id) continue;
+    var estadoActual = String(all[r][idxEstado] || "")
+      .trim()
+      .toUpperCase();
+    if (estadoActual !== "PENDIENTE") {
+      throw new Error("La solicitud ya está resuelta");
+    }
 
     var matRow = idxMat >= 0 ? String(all[r][idxMat] || "").trim().toUpperCase() : "";
     if (canResolveByAssigned && rol !== "GESTOR") {
@@ -266,8 +367,19 @@ function apiSolicitudResolver(payload) {
       var finR = parseFechaHoraDesdeFila_(idxFechaFin >= 0 ? all[r][idxFechaFin] : "", idxHoraFin >= 0 ? all[r][idxHoraFin] : "");
       if (!iniR || !finR || !matRow) throw new Error("Solicitud con fecha/hora/matrícula inválida");
       if (iniR >= finR) throw new Error("Rango de fecha/hora inválido en solicitud");
-      if (haySolapeAprobado_(matRow, iniR, finR, id)) {
-        throw new Error("Vehículo no disponible en ese rango");
+      var conflict = findSolapeAprobadoEnMismaHoja_(all, headers, matRow, iniR, finR, id);
+      if (conflict) {
+        throw new Error(
+          "Vehículo no disponible en ese rango (solapa con " +
+            String(conflict.id_solicitud || "sin_id") +
+            " " +
+            String(conflict.fecha_inicio || "") +
+            (conflict.hora_inicio ? " " + conflict.hora_inicio : "") +
+            " -> " +
+            String(conflict.fecha_fin || "") +
+            (conflict.hora_fin ? " " + conflict.hora_fin : "") +
+            ")"
+        );
       }
     }
 
@@ -284,6 +396,19 @@ function apiSolicitudResolver(payload) {
     }
 
     var trabTo = emailSolicitanteDesdeRowSolicitud_(headers, all[r], payload);
+    var usoCreadoId = "";
+    if (estado === "APROBADA") {
+      usoCreadoId = crearUsoDesdeSolicitud_({
+        id_solicitud: id,
+        matricula: matRow,
+        trabajador_email: idxTrabEmail >= 0 ? all[r][idxTrabEmail] : "",
+        trabajador_nombre: idxTrabNombre >= 0 ? all[r][idxTrabNombre] : "",
+        fecha_inicio: idxFechaIni >= 0 ? all[r][idxFechaIni] : "",
+        hora_inicio: idxHoraIni >= 0 ? all[r][idxHoraIni] : "",
+        fecha_fin: idxFechaFin >= 0 ? all[r][idxFechaFin] : "",
+        hora_fin: idxHoraFin >= 0 ? all[r][idxHoraFin] : "",
+      });
+    }
     var mailRes = { sent: false, reason: "" };
     try {
       mailRes = enviarCorreoResolucionSolicitudUso_({
@@ -301,6 +426,7 @@ function apiSolicitudResolver(payload) {
     return {
       id_solicitud: id,
       estado: estado,
+      id_uso_creado: usoCreadoId,
       email_solicitante_enviado: mailRes.sent,
       email_solicitante_destino: trabTo,
       email_solicitante_aviso: mailRes.sent ? "ok" : String(mailRes.reason || ""),

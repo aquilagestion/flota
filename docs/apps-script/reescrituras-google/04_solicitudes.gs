@@ -199,6 +199,16 @@ function crearUsoDesdeSolicitud_(sol) {
       .trim()
       .toLowerCase(),
     trabajador_nombre: String(sol.trabajador_nombre || "").trim(),
+    // Header real de USO en producción:
+    desde_ts: normalizeDateDMYCell_(String(sol.fecha_inicio || "").trim()),
+    hasta_ts: normalizeDateDMYCell_(String(sol.fecha_fin || "").trim()),
+    km_salida: "",
+    km_llegada: "",
+    incidencias: "",
+    estado: "ACTIVO",
+    // Compatibilidad con otras plantillas de USO:
+    fecha_inicio_ocupacion: formatDateDMY_(ini),
+    fecha_fin_ocupacion: formatDateDMY_(fin),
     inicio_previsto: formatDateTimeISO_(ini),
     fin_previsto: formatDateTimeISO_(fin),
     inicio_real: "",
@@ -210,4 +220,183 @@ function crearUsoDesdeSolicitud_(sol) {
 
   appendRowByHeaders_(sh, rowObj);
   return id;
+}
+
+function formatDateDMY_(d) {
+  return Utilities.formatDate(d, CFG.TIMEZONE, "dd/MM/yyyy");
+}
+
+function formatTimeHM_(d) {
+  return Utilities.formatDate(d, CFG.TIMEZONE, "HH:mm");
+}
+
+function parseLiberacionInicioFin_(fechaInicio, horaInicio, fechaFin, horaFin) {
+  var ini = parseFechaHoraDesdeFila_(fechaInicio, horaInicio);
+  if (!ini) return { ini: null, fin: null };
+  var horaFinExplicita = !(horaFin === undefined || horaFin === null || String(horaFin).trim() === "");
+  var fin = parseFechaHoraDesdeFila_(fechaFin, horaFinExplicita ? horaFin : "23:59");
+  return { ini: ini, fin: fin };
+}
+
+function apiLiberacionCrear(payload) {
+  payload = payload || {};
+  var idSolicitud = String(payload.id_solicitud || "").trim();
+  if (!idSolicitud) throw new Error("Falta campo: id_solicitud");
+
+  var requester = normalizeEmail_(
+    payload.user_email || payload.responsable_email || payload.resuelto_por_email || ""
+  );
+  var rol = normalizeRolSegunUsuarios_(requester);
+  if (rol !== "GESTOR" && rol !== "RESPONSABLE" && rol !== "ADMINISTRACION") {
+    throw new Error("No autorizado para liberar solicitudes");
+  }
+
+  var shSol = getSheet(CFG.SHEETS.SOLICITUDES);
+  var solRows = rowsToObjects_(shSol);
+  var sol = solRows.find((r) => String(r.id_solicitud || "").trim() === idSolicitud);
+  if (!sol) throw new Error("Solicitud no encontrada");
+  var estadoActual = String(sol.estado || "")
+    .trim()
+    .toUpperCase();
+  if (estadoActual !== "APROBADA") throw new Error("Solo se pueden liberar solicitudes APROBADA");
+
+  var mat = normalizeMatricula_(sol.matricula);
+  if (!mat) throw new Error("Solicitud sin matrícula");
+  if (rol === "RESPONSABLE") {
+    var assigned = getMatriculasACargo_(requester);
+    if (!assigned[mat]) throw new Error("Solo puedes liberar solicitudes de vehículos a tu cargo");
+  }
+
+  var fIniLib = String(payload.fecha_inicio_liberacion || payload.fecha_inicio || "").trim();
+  var fFinLib = String(payload.fecha_fin_liberacion || payload.fecha_fin || "").trim();
+  if (!fIniLib || !fFinLib) throw new Error("Faltan fecha_inicio_liberacion y fecha_fin_liberacion");
+
+  var hIniLib = String(payload.hora_inicio_liberacion || payload.hora_inicio || "").trim();
+  var hFinLib = String(payload.hora_fin_liberacion || payload.hora_fin || "").trim();
+  var parsedLib = parseLiberacionInicioFin_(fIniLib, hIniLib, fFinLib, hFinLib);
+  var libIni = parsedLib.ini;
+  var libFin = parsedLib.fin;
+  if (!libIni || !libFin || libIni >= libFin) throw new Error("Rango de liberación inválido");
+
+  var solIni = parseFechaHoraDesdeFila_(sol.fecha_inicio, sol.hora_inicio);
+  var solFin = parseFechaHoraDesdeFila_(sol.fecha_fin, sol.hora_fin);
+  if (!solIni || !solFin || solIni >= solFin) throw new Error("Solicitud original con fechas inválidas");
+
+  if (libIni < solIni || libFin > solFin) {
+    throw new Error("El rango a liberar debe estar dentro del rango aprobado original");
+  }
+
+  var motivo = String(payload.motivo || payload.motivo_liberacion || "").trim();
+  if (!motivo) motivo = "Liberación de reserva";
+
+  var keepBefore = solIni < libIni;
+  var keepAfter = libFin < solFin;
+  var segmentos = [];
+  if (keepBefore) segmentos.push({ ini: solIni, fin: libIni });
+  if (keepAfter) segmentos.push({ ini: libFin, fin: solFin });
+
+  var headers = getHeaders_(shSol);
+  var rowNum = Number(sol._row || 0);
+  if (!rowNum) throw new Error("No se pudo localizar fila de la solicitud");
+  var idxEstado = headers.indexOf("estado");
+  var idxFechaIni = headers.indexOf("fecha_inicio");
+  var idxHoraIni = headers.indexOf("hora_inicio");
+  var idxFechaFin = headers.indexOf("fecha_fin");
+  var idxHoraFin = headers.indexOf("hora_fin");
+  var idxMotivo = headers.indexOf("motivo");
+  var idxResuelto = headers.indexOf("resuelto_por_email");
+  var idxFechaRes = headers.indexOf("fecha_resolucion");
+  var idxMotivoRech = headers.indexOf("motivo_rechazo");
+
+  function setCellIfIdx_(idx, value) {
+    if (idx >= 0) shSol.getRange(rowNum, idx + 1).setValue(value);
+  }
+
+  var createdSolicitudIds = [];
+  var updatedSolicitudIds = [];
+  var estadoFinalSolicitud = "";
+
+  if (!segmentos.length) {
+    estadoFinalSolicitud = "LIBERADA";
+    setCellIfIdx_(idxEstado, estadoFinalSolicitud);
+    setCellIfIdx_(idxMotivoRech, motivo);
+    setCellIfIdx_(idxResuelto, requester || "");
+    setCellIfIdx_(idxFechaRes, normalizeDateDMYCell_(new Date()));
+  } else {
+    var seg0 = segmentos[0];
+    estadoFinalSolicitud = "APROBADA";
+    if (idxFechaIni >= 0) setCellIfIdx_(idxFechaIni, formatDateDMY_(seg0.ini));
+    if (idxHoraIni >= 0) setCellIfIdx_(idxHoraIni, formatTimeHM_(seg0.ini));
+    if (idxFechaFin >= 0) setCellIfIdx_(idxFechaFin, formatDateDMY_(seg0.fin));
+    if (idxHoraFin >= 0) setCellIfIdx_(idxHoraFin, formatTimeHM_(seg0.fin));
+    if (idxMotivo >= 0) {
+      var mot0 = String(sol.motivo || "").trim();
+      setCellIfIdx_(idxMotivo, mot0 ? mot0 + " | Ajuste por liberación parcial" : "Ajuste por liberación parcial");
+    }
+    updatedSolicitudIds.push(idSolicitud);
+
+    if (segmentos.length > 1) {
+      var seg1 = segmentos[1];
+      var newId = genId_("SOL");
+      var nueva = Object.assign({}, sol);
+      delete nueva._row;
+      nueva.id_solicitud = newId;
+      nueva.fecha_inicio = formatDateDMY_(seg1.ini);
+      nueva.hora_inicio = formatTimeHM_(seg1.ini);
+      nueva.fecha_fin = formatDateDMY_(seg1.fin);
+      nueva.hora_fin = formatTimeHM_(seg1.fin);
+      nueva.estado = "APROBADA";
+      if (nueva.motivo_rechazo !== undefined) nueva.motivo_rechazo = "";
+      if (nueva.resuelto_por_email !== undefined) nueva.resuelto_por_email = "";
+      if (nueva.fecha_resolucion !== undefined) nueva.fecha_resolucion = "";
+      if (nueva.motivo !== undefined) {
+        var mot1 = String(sol.motivo || "").trim();
+        nueva.motivo = mot1 ? mot1 + " | Tramo generado por liberación parcial" : "Tramo generado por liberación parcial";
+      }
+      appendRowByHeaders_(shSol, nueva);
+      createdSolicitudIds.push(newId);
+    }
+  }
+
+  var shUso = getSheet(CFG.SHEETS.USO);
+  var usoRows = rowsToObjects_(shUso);
+  var usoHeaders = getHeaders_(shUso);
+  var idxUsoEstado = usoHeaders.indexOf("estado_uso");
+  var idxUsoFinReal = usoHeaders.indexOf("fin_real");
+  var usosAfectados = 0;
+  usoRows.forEach((u) => {
+    if (String(u.id_solicitud || "").trim() !== idSolicitud) return;
+    var uRow = Number(u._row || 0);
+    if (!uRow) return;
+    if (idxUsoEstado >= 0) shUso.getRange(uRow, idxUsoEstado + 1).setValue("LIBERADO");
+    if (idxUsoFinReal >= 0) shUso.getRange(uRow, idxUsoFinReal + 1).setValue(formatDateTimeISO_(new Date()));
+    usosAfectados++;
+  });
+
+  var usosCreados = [];
+  if (segmentos.length) {
+    var sBase = rowsToObjects_(shSol).find((r) => String(r.id_solicitud || "").trim() === idSolicitud);
+    if (sBase) {
+      usosCreados.push(crearUsoDesdeSolicitud_(sBase));
+    }
+    if (createdSolicitudIds.length) {
+      createdSolicitudIds.forEach((sid) => {
+        var sx = rowsToObjects_(shSol).find((r) => String(r.id_solicitud || "").trim() === sid);
+        if (sx) usosCreados.push(crearUsoDesdeSolicitud_(sx));
+      });
+    }
+  }
+
+  return {
+    id_solicitud: idSolicitud,
+    matricula: mat,
+    liberacion_inicio: formatDateTimeISO_(libIni),
+    liberacion_fin: formatDateTimeISO_(libFin),
+    estado_final_solicitud_original: estadoFinalSolicitud || "APROBADA",
+    solicitudes_actualizadas: updatedSolicitudIds,
+    solicitudes_creadas: createdSolicitudIds,
+    usos_marcados_liberados: usosAfectados,
+    usos_creados: usosCreados,
+    motivo: motivo,
+  };
 }

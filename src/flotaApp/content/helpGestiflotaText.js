@@ -5,7 +5,7 @@
  * HELP_APP_VERSION: al ejecutar `npm run bundle:local` / `build-apk.bat`, se iguala
  * a `expo.version` en app.json (junto con Gradle y package.json): scripts/sync-app-versions-from-app-json.ps1
  */
-export const HELP_APP_VERSION = "1.0.12";
+export const HELP_APP_VERSION = "1.0.13";
 
 export const HELP_BODY = `MANUAL COMPLETO — APLICACIÓN FLOTA / GESTIFLOTA
 Versión de esta guía: ${HELP_APP_VERSION}
