@@ -143,10 +143,22 @@ function normalizeDateToDmy_(value) {
     const p1 = Number(m[1]);
     const p2 = Number(m[2]);
     const yyyy = m[3];
+    if (!p1 || !p2 || p1 > 31 || p2 > 31) return raw;
     if (p2 > 12 && p1 >= 1 && p1 <= 12) {
       return `${String(p2).padStart(2, "0")}/${String(p1).padStart(2, "0")}/${yyyy}`;
     }
+    if (p1 > 12 && p2 >= 1 && p2 <= 12) {
+      return `${String(p1).padStart(2, "0")}/${String(p2).padStart(2, "0")}/${yyyy}`;
+    }
+    // Ambiguo (ambos <= 12): mantener orden recibido pero normalizar padding.
     return `${String(p1).padStart(2, "0")}/${String(p2).padStart(2, "0")}/${yyyy}`;
+  }
+  const d = parseDateFlexible_(raw);
+  if (d) {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
   }
   return raw;
 }

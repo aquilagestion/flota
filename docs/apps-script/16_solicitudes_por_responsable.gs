@@ -59,23 +59,19 @@ function fechaSalidaSolicitud_(v) {
     var d = sheetsSerialToDateTime_(v);
     if (d && !isNaN(d.getTime())) return normalizeDateDMYCell_(d);
   }
+
   var raw = String(v == null ? "" : v).trim();
   if (!raw) return "";
-  var m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) {
-    var p1 = Number(m[1]);
-    var p2 = Number(m[2]);
-    var yyyy = m[3];
-    // Si viene estilo MM/dd/yyyy (p2 > 12), invertir a dd/MM/yyyy.
-    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
-      return String(p2).padStart(2, "0") + "/" + String(p1).padStart(2, "0") + "/" + yyyy;
-    }
-    return String(p1).padStart(2, "0") + "/" + String(p2).padStart(2, "0") + "/" + yyyy;
-  }
-  var mIso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (mIso) {
-    return mIso[3] + "/" + mIso[2] + "/" + mIso[1];
-  }
+
+  // 1) Intentar parser estándar del proyecto (dd/MM, yyyy-MM-dd, etc.).
+  var dParsed = parseFechaHoraDesdeFila_(raw, "");
+  if (dParsed && !isNaN(dParsed.getTime())) return normalizeDateDMYCell_(dParsed);
+
+  // 2) Último intento con Date nativo.
+  var dNative = new Date(raw);
+  if (!isNaN(dNative.getTime())) return normalizeDateDMYCell_(dNative);
+
+  // 3) Si no se puede interpretar, devolver texto original sin romper formato.
   return raw;
 }
 
