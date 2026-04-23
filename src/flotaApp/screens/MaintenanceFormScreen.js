@@ -62,6 +62,31 @@ const DEPARTAMENTOS_O_PROYECTOS = [
 const DEPARTAMENTOS_O_PROYECTOS_VALID = new Set(DEPARTAMENTOS_O_PROYECTOS.map((o) => o.value));
 const OTRO_TIPO = "__OTRO_TIPO__";
 
+function mapProjectOptions_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (const r of list) {
+    const entries = Object.entries(r || {});
+    const values = entries.map(([, v]) => String(v || "").trim());
+    const colB = values.length >= 2 ? values[1] : "";
+    const value = String(r?.id_proyecto || r?.id || (values.length ? values[0] : "")).trim();
+    const label = String(r?.nombre_proyecto || r?.nombre || r?.proyecto || colB).trim();
+    if (!value || !label) continue;
+    if (!out.find((x) => x.value === value)) out.push({ value, label });
+  }
+  return out;
+}
+
+async function loadProjectRows_(email) {
+  try {
+    const res = await sheetsApi.get("proyecto_list_columna_b", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  } catch {
+    const res = await sheetsApi.get("proyecto_list", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  }
+}
+
 function normalizeCatalogKey_(s) {
   return String(s || "")
     .trim()
@@ -182,9 +207,32 @@ export default function MaintenanceFormScreen({ navigation }) {
     { value: OTRO_TIPO, label: "OTRO (escribir)" },
   ]);
   const [vehiclesData, setVehiclesData] = useState(() => localDb.getVehiclesMemory());
+  const [projectOptions, setProjectOptions] = useState([]);
   const [saving, setSaving] = useState(false);
   const [readingKm, setReadingKm] = useState(false);
   const [lastOcrUri, setLastOcrUri] = useState("");
+  const departmentProjectOptions = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    const add = (opt) => {
+      const value = String(opt?.value || "").trim();
+      const label = String(opt?.label || "").trim();
+      if (!value || !label || seen.has(value)) return;
+      seen.add(value);
+      out.push({ value, label });
+    };
+    for (const p of projectOptions) add(p);
+    for (const d of DEPARTAMENTOS_O_PROYECTOS) {
+      if (String(d?.value || "") === OTRO_DEPARTAMENTO) continue;
+      add(d);
+    }
+    add({ value: OTRO_DEPARTAMENTO, label: "Añadir otro (escribir)" });
+    return out;
+  }, [projectOptions]);
+  const departmentProjectValues = useMemo(
+    () => new Set(departmentProjectOptions.map((o) => String(o?.value || "").trim())),
+    [departmentProjectOptions]
+  );
 
   useEffect(() => {
     async function loadVehicles() {
@@ -217,6 +265,12 @@ export default function MaintenanceFormScreen({ navigation }) {
       } catch {
         // fallback local
       }
+      try {
+        const rows = await loadProjectRows_(user?.email || "");
+        setProjectOptions(mapProjectOptions_(rows));
+      } catch {
+        setProjectOptions([]);
+      }
     }
     loadVehicles();
   }, [user?.email]);
@@ -233,10 +287,10 @@ export default function MaintenanceFormScreen({ navigation }) {
     if (!dept) return;
     setForm((p) => ({
       ...p,
-      departamento_o_proyecto: DEPARTAMENTOS_O_PROYECTOS_VALID.has(dept) ? dept : OTRO_DEPARTAMENTO,
-      departamento_o_proyecto_custom: DEPARTAMENTOS_O_PROYECTOS_VALID.has(dept) ? "" : dept,
+      departamento_o_proyecto: departmentProjectValues.has(dept) ? dept : OTRO_DEPARTAMENTO,
+      departamento_o_proyecto_custom: departmentProjectValues.has(dept) ? "" : dept,
     }));
-  }, [form.matricula, vehiclesData, form.departamento_o_proyecto]);
+  }, [form.matricula, vehiclesData, form.departamento_o_proyecto, departmentProjectValues]);
 
   const vehicleSelectOptions = useMemo(
     () => vehicleOptions.map((m) => ({ value: m, label: m })),
@@ -345,7 +399,7 @@ export default function MaintenanceFormScreen({ navigation }) {
           required
           value={form.departamento_o_proyecto}
           onChange={(v) => set("departamento_o_proyecto", v)}
-          options={DEPARTAMENTOS_O_PROYECTOS}
+          options={departmentProjectOptions}
         />
         {form.departamento_o_proyecto === OTRO_DEPARTAMENTO ? (
           <TextField

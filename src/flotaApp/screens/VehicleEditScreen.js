@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
 import { sheetsApi } from "../api/sheetsApi";
 import { localDb } from "../storage/localDb";
 import { isAdministracion, isGestor } from "../auth/roles";
 import { theme } from "../ui/theme";
+import { SelectField } from "../ui/form/Fields";
 
 function getVehicleFieldValue_(vehicle, field) {
   if (!vehicle) return "";
@@ -49,6 +50,33 @@ function initialFromVehicle_(vehicle) {
   };
 }
 
+const OTRO_DEPARTAMENTO = "__OTRO__";
+
+function mapProjectOptions_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (const r of list) {
+    const entries = Object.entries(r || {});
+    const values = entries.map(([, v]) => String(v || "").trim());
+    const colB = values.length >= 2 ? values[1] : "";
+    const value = String(r?.id_proyecto || r?.id || (values.length ? values[0] : "")).trim();
+    const label = String(r?.nombre_proyecto || r?.nombre || r?.proyecto || colB).trim();
+    if (!value || !label) continue;
+    if (!out.find((x) => x.value === value)) out.push({ value, label });
+  }
+  return out;
+}
+
+async function loadProjectRows_(email) {
+  try {
+    const res = await sheetsApi.get("proyecto_list_columna_b", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  } catch {
+    const res = await sheetsApi.get("proyecto_list", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  }
+}
+
 function Header({ title, onBack }) {
   return (
     <View style={styles.header}>
@@ -66,10 +94,31 @@ export default function VehicleEditScreen({ navigation, route }) {
   const sourceVehicle = route?.params?.vehicle || {};
   const [form, setForm] = useState(() => initialFromVehicle_(sourceVehicle));
   const [busy, setBusy] = useState(false);
+  const [projectOptions, setProjectOptions] = useState([]);
   const title = useMemo(() => {
     const m = String(form.matricula || "").trim().toUpperCase();
     return m ? `Editar vehículo: ${m}` : "Editar vehículo";
   }, [form.matricula]);
+  const projectSelectOptions = useMemo(
+    () => [{ value: "", label: "Selecciona..." }, ...projectOptions, { value: OTRO_DEPARTAMENTO, label: "Añadir otro (escribir)" }],
+    [projectOptions]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await loadProjectRows_(user?.email || "");
+        if (cancelled) return;
+        setProjectOptions(mapProjectOptions_(rows));
+      } catch {
+        if (!cancelled) setProjectOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
 
   const save = async () => {
     if (!canManageVehicles) {
@@ -80,6 +129,10 @@ export default function VehicleEditScreen({ navigation, route }) {
       Alert.alert("Falta matrícula", "La matrícula es obligatoria.");
       return;
     }
+    const departamento_o_proyecto =
+      String(form.departamento_o_proyecto || "").trim() === OTRO_DEPARTAMENTO
+        ? String(form.departamento_o_proyecto_custom || "").trim()
+        : String(form.departamento_o_proyecto || "").trim();
     const payload = {
       matricula: String(form.matricula || "").trim().toUpperCase(),
       fecha_matriculacion: String(form.fecha_matriculacion || "").trim(),
@@ -87,7 +140,7 @@ export default function VehicleEditScreen({ navigation, route }) {
       modelo: String(form.modelo || "").trim(),
       combustible: String(form.combustible || "").trim(),
       propiedad: String(form.propiedad || "").trim(),
-      departamento_o_proyecto: String(form.departamento_o_proyecto || "").trim(),
+      departamento_o_proyecto,
       responsable: String(form.responsable || "").trim(),
       itv_desde: String(form.itv_desde || "").trim(),
       itv_hasta: String(form.itv_hasta || "").trim(),
@@ -159,8 +212,22 @@ export default function VehicleEditScreen({ navigation, route }) {
         <Text style={styles.label}>PROPIEDAD</Text>
         <TextInput style={styles.input} placeholderTextColor={theme.colors.placeholder} value={form.propiedad} onChangeText={(v) => setForm((p) => ({ ...p, propiedad: v }))} />
 
-        <Text style={styles.label}>DEPARTAMENTO / PROYECTO</Text>
-        <TextInput style={styles.input} placeholderTextColor={theme.colors.placeholder} value={form.departamento_o_proyecto} onChangeText={(v) => setForm((p) => ({ ...p, departamento_o_proyecto: v }))} />
+        <SelectField
+          label="DEPARTAMENTO / PROYECTO"
+          required={false}
+          value={form.departamento_o_proyecto}
+          onChange={(v) => setForm((p) => ({ ...p, departamento_o_proyecto: v }))}
+          options={projectSelectOptions}
+        />
+        {form.departamento_o_proyecto === OTRO_DEPARTAMENTO ? (
+          <TextInput
+            style={styles.input}
+            placeholder="Escribe proyecto/departamento"
+            placeholderTextColor={theme.colors.placeholder}
+            value={form.departamento_o_proyecto_custom || ""}
+            onChangeText={(v) => setForm((p) => ({ ...p, departamento_o_proyecto_custom: v }))}
+          />
+        ) : null}
 
         <Text style={styles.label}>RESPONSABLE</Text>
         <TextInput style={styles.input} placeholderTextColor={theme.colors.placeholder} value={form.responsable} onChangeText={(v) => setForm((p) => ({ ...p, responsable: v }))} />

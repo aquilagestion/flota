@@ -2,6 +2,7 @@ export const env = {
   apiUrl: process.env.EXPO_PUBLIC_API_URL,
   apiSecret: process.env.EXPO_PUBLIC_API_SECRET,
   odometerOcrUrl: process.env.EXPO_PUBLIC_ODOMETER_OCR_URL,
+  ticketOcrUrl: process.env.EXPO_PUBLIC_TICKET_OCR_URL,
   appEnv: process.env.EXPO_PUBLIC_ENV,
   useFirebase: String(process.env.EXPO_PUBLIC_USE_FIREBASE || "false")
     .trim()

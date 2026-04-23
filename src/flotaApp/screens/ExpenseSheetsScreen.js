@@ -186,6 +186,8 @@ function amountFromExpense_(e) {
       return parse(e?.importe_multa);
     case "OTROS":
       return parse(e?.importe_otros_gastos);
+    case "KILOMETRAJE_COLABORADOR":
+      return parse(e?.importe_km_colaborador || e?.coste_total);
     default:
       return 0;
   }
@@ -202,6 +204,7 @@ function escapeHtml_(value) {
 
 function expenseDate_(e) {
   return (
+    e?.fecha_viaje_colaborador ||
     e?.fecha_repostaje ||
     e?.fecha_compra_mantenimiento ||
     e?.fecha_compra_repuestos ||
@@ -344,6 +347,7 @@ function entityFromExpense_(e) {
   if (t === "ITV") return String(e?.estacion_itv || "").trim();
   if (t === "PEAJES") return String(e?.entidad_peaje || e?.salida_peaje || e?.entrada_peaje || "").trim();
   if (t === "PARKING") return String(e?.entidad_parking || e?.tipo_zona || "").trim();
+  if (t === "KILOMETRAJE_COLABORADOR") return String(e?.accion_colaborador || e?.origen_colaborador || "").trim();
   return "";
 }
 
@@ -355,6 +359,7 @@ function invoiceFromExpense_(e) {
   if (t === "ITV") return String(e?.numero_factura_itv || "").trim();
   if (t === "OTROS") return String(e?.numero_factura_otros || "").trim();
   if (t === "PEAJES" || t === "PARKING") return "TIQUET";
+  if (t === "KILOMETRAJE_COLABORADOR") return "VIAJE";
   return String(e?.numero_ticket || "").trim();
 }
 
@@ -371,6 +376,7 @@ function humanConcept_(tipo) {
     ITV: "itv",
     MULTAS_SANCIONES: "multa/sanción",
     OTROS: "otros gastos",
+    KILOMETRAJE_COLABORADOR: "kilometraje colaborador",
     SEGURO: "seguro",
     IMPUESTOS: "impuestos",
     OTROS_IMPUESTOS: "otros impuestos",
@@ -394,6 +400,32 @@ function formatCurrencyEs_(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return "0,00";
   return n.toFixed(2).replace(".", ",");
+}
+
+function monthNameEs_(dateLike) {
+  const raw = String(dateLike || "").trim();
+  if (!raw) return "";
+  let d = null;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+    const [dd, mm, yyyy] = raw.split("/");
+    d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    d = new Date(`${raw}T00:00:00`);
+  } else {
+    d = new Date(raw);
+  }
+  if (!Number.isFinite(d?.getTime?.())) return "";
+  return d.toLocaleDateString("es-ES", { month: "long" }).toUpperCase();
+}
+
+function kmFromLine_(line) {
+  const n = Number(String(line?.distancia_km || line?.km_recorridos_colaborador || "").replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function eurKmFromLine_(line) {
+  const n = Number(String(line?.eur_km || line?.tarifa_eur_km_aplicada || "").replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
 }
 
 async function getSheetLogoDataUri_() {
@@ -682,7 +714,9 @@ export default function ExpenseSheetsScreen({ navigation }) {
         total_importe: Number(selectedTotal.toFixed(2)),
         moneda: "EUR",
         observaciones: String(obs || "").trim(),
-        lineas: selectedRows.map((r) => ({
+        lineas: selectedRows.map((r) => {
+          const isKmColab = String(r.type || "").trim().toUpperCase() === "KILOMETRAJE_COLABORADOR";
+          return {
           id_gasto: String(r?.raw?.id_gasto || r.id || "").trim(),
           expense_id: r.id,
           fecha: r.date || "",
@@ -697,7 +731,15 @@ export default function ExpenseSheetsScreen({ navigation }) {
               : r?.raw?.departamento_o_proyecto || r?.raw?.departamento_o_proyecto_custom || ""
           ).trim(),
           importe: Number((r.amount || 0).toFixed(2)),
-        })),
+          distancia_km: isKmColab ? Number(String(r?.raw?.km_recorridos_colaborador || "0").replace(",", ".")) || 0 : 0,
+          eur_km: isKmColab ? Number(String(r?.raw?.tarifa_eur_km_aplicada || "0").replace(",", ".")) || 0 : 0,
+          medio_transporte: isKmColab ? String(r?.raw?.accion_colaborador || "coche propio").trim() : "",
+          motivo_salida: isKmColab ? String(r?.raw?.motivo_colaborador || "").trim() : "",
+          itinerario: isKmColab
+            ? `${String(r?.raw?.origen_colaborador || "").trim()} - ${String(r?.raw?.destino_colaborador || "").trim()}`
+            : "",
+          };
+        }),
       };
 
       const nextSheet = {
@@ -776,6 +818,8 @@ export default function ExpenseSheetsScreen({ navigation }) {
       for (let i = 0; i < 15; i += 1) {
         rows.push(lines[i] || {});
       }
+      const kmLines = lines.filter((l) => String(l?.tipo_gasto || "").trim().toUpperCase() === "KILOMETRAJE_COLABORADOR");
+      const otherLines = lines.filter((l) => String(l?.tipo_gasto || "").trim().toUpperCase() !== "KILOMETRAJE_COLABORADOR");
       const rowsHtml = rows
         .map((l) => {
           return `<tr>
@@ -795,6 +839,82 @@ export default function ExpenseSheetsScreen({ navigation }) {
       const person = personFromSheet_(sheetForPrint, user, profileName);
       const sheetNumber = inferredSheetNumber_(sheetForPrint, user, profileName);
       const sheetOrderText = sheetNumber || String(sheetForPrint?.id || sheetForPrint?.hoja_id_local || "").trim();
+      if (kmLines.length && otherLines.length === 0) {
+        const kmRows = [];
+        for (let i = 0; i < 24; i += 1) kmRows.push(kmLines[i] || {});
+        const totalKm = kmLines.reduce((acc, l) => acc + kmFromLine_(l), 0);
+        const eurKm = eurKmFromLine_(kmLines[0]) || 0;
+        const subtotal = Number((totalKm * eurKm).toFixed(2));
+        const firstDate = String(kmLines[0]?.fecha || "").trim();
+        const monthLabel = monthNameEs_(firstDate) || "—";
+        const yearLabel = firstDate && /^\d{2}\/\d{2}\/\d{4}$/.test(firstDate) ? firstDate.split("/")[2] : "";
+        const projectName = String(kmLines[0]?.proyecto || "").trim();
+        const workerName = person;
+        const kmRowsHtml = kmRows
+          .map((l, idx) => {
+            const it = String(l?.itinerario || "").trim();
+            const medio = String(l?.medio_transporte || "coche propio").trim();
+            const motivo = String(l?.motivo_salida || "").trim();
+            return `<tr>
+              <td style="border:1px solid #333; padding:4px;">${idx + 1}</td>
+              <td style="border:1px solid #333; padding:4px;">${escapeHtml_(formatDateEs_(l?.fecha || ""))}</td>
+              <td style="border:1px solid #333; padding:4px; text-align:right;">${l?.fecha ? escapeHtml_(String(kmFromLine_(l))) : ""}</td>
+              <td style="border:1px solid #333; padding:4px; text-align:right;">${l?.fecha ? `${escapeHtml_(formatCurrencyEs_(Number(l?.importe || 0)))} €` : ""}</td>
+              <td style="border:1px solid #333; padding:4px;">${escapeHtml_(it)}</td>
+              <td style="border:1px solid #333; padding:4px;">${escapeHtml_(medio)}</td>
+              <td style="border:1px solid #333; padding:4px;">${escapeHtml_(motivo)}</td>
+            </tr>`;
+          })
+          .join("");
+        const kmHtml = `
+        <html>
+        <body style="font-family: Arial, sans-serif; color:#111; padding:18px;">
+          <h2 style="text-align:center; margin:0 0 8px 0;">LIQUIDACIÓN DE GASTOS DE VIAJE Y MANUTENCIÓN</h2>
+          <div style="font-size:12px; margin-bottom:10px;">
+            <b>Mes:</b> ${escapeHtml_(monthLabel)} &nbsp; <b>Año:</b> ${escapeHtml_(yearLabel)} &nbsp; <b>Nº orden:</b> ${escapeHtml_(sheetOrderText)}
+          </div>
+          <div style="font-size:12px; margin-bottom:10px;">
+            <b>Trabajador:</b> ${escapeHtml_(workerName)} &nbsp; <b>Proyecto:</b> ${escapeHtml_(projectName || "—")}
+          </div>
+          <table style="width:100%; border-collapse:collapse; font-size:11px; table-layout:fixed;">
+            <thead>
+              <tr>
+                <th style="border:1px solid #333; padding:5px; width:6%;">Nº</th>
+                <th style="border:1px solid #333; padding:5px; width:12%;">Fecha</th>
+                <th style="border:1px solid #333; padding:5px; width:10%;">Distancia (Km)</th>
+                <th style="border:1px solid #333; padding:5px; width:12%;">Importe</th>
+                <th style="border:1px solid #333; padding:5px; width:25%;">Itinerario</th>
+                <th style="border:1px solid #333; padding:5px; width:15%;">Medio transporte</th>
+                <th style="border:1px solid #333; padding:5px; width:20%;">Motivo salida</th>
+              </tr>
+            </thead>
+            <tbody>${kmRowsHtml}</tbody>
+          </table>
+          <div style="margin-top:10px; font-size:12px; text-align:right;">
+            <div><b>Total km:</b> ${escapeHtml_(String(totalKm))}</div>
+            <div><b>€/km:</b> ${escapeHtml_(formatCurrencyEs_(eurKm))} €</div>
+            <div><b>Subtotal:</b> ${escapeHtml_(formatCurrencyEs_(subtotal))} €</div>
+            <div><b>Total otros gastos:</b> 0,00 €</div>
+            <div style="margin-top:6px; font-size:14px;"><b>TOTAL A PAGAR: ${escapeHtml_(formatCurrencyEs_(subtotal))} €</b></div>
+          </div>
+          <div style="margin-top:18px; font-size:12px;">En Majadahonda, a ${escapeHtml_(createdDate || formatDateEs_(new Date().toISOString()))}.</div>
+        </body>
+        </html>`;
+        const pdf = await Print.printToFileAsync({ html: kmHtml });
+        const pdfUri = String(pdf?.uri || "").trim();
+        if (!pdfUri) throw new Error("No se pudo generar el PDF de kilometraje.");
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare) {
+          await Sharing.shareAsync(pdfUri, {
+            mimeType: "application/pdf",
+            dialogTitle: `Compartir hoja ${sheetOrderText}`,
+            UTI: "com.adobe.pdf",
+          });
+        } else {
+          await Print.printAsync({ html: kmHtml });
+        }
+        return;
+      }
       const html = `
       <html>
       <body style="font-family: Arial, sans-serif; color:#111; padding:22px;">

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
+import { isColaborador } from "../auth/roles";
 import { localDb } from "../storage/localDb";
 import { syncService } from "../sync/syncService";
 import { EXPENSE_TYPES, FUEL_BRANDS, FUEL_TYPES, PARKING_ZONES, PAYMENT_METHODS } from "../domain/expenseSchema";
@@ -22,6 +23,7 @@ function Header({ title, onBack }) {
 }
 
 const initial = {
+  id_viaje_propio: "",
   matricula: "",
   departamento_o_proyecto: "",
   departamento_o_proyecto_custom: "",
@@ -96,6 +98,18 @@ const initial = {
   observaciones: "",
   kilometros_actuales: "",
   odometroLocalUri: "",
+  fecha_viaje_colaborador: "",
+  km_inicial_colaborador: "",
+  km_final_colaborador: "",
+  km_recorridos_colaborador: "",
+  origen_colaborador: "",
+  destino_colaborador: "",
+  proyecto_colaborador_id: "",
+  proyecto_colaborador_nombre: "",
+  motivo_colaborador: "",
+  accion_colaborador: "",
+  tarifa_eur_km_aplicada: "",
+  importe_km_colaborador: "",
 };
 
 const OTRO_DEPARTAMENTO = "__OTRO__";
@@ -122,6 +136,16 @@ const DEPARTAMENTOS_O_PROYECTOS = [
 ];
 
 const DEPARTAMENTOS_O_PROYECTOS_VALID = new Set(DEPARTAMENTOS_O_PROYECTOS.map((o) => o.value));
+
+async function loadProjectRows_(email) {
+  try {
+    const res = await sheetsApi.get("proyecto_list_columna_b", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  } catch {
+    const res = await sheetsApi.get("proyecto_list", { solo_activos: "SI", user_email: email || "" });
+    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+  }
+}
 
 function normalizeExpenseType_(raw) {
   const v = String(raw || "")
@@ -162,6 +186,60 @@ function sortMatriculas_(plates) {
       .localeCompare(String(b || "").trim().toUpperCase(), "es", { numeric: true, sensitivity: "base" })
   );
   return list;
+}
+
+function mapProjectOptions_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (const r of list) {
+    if (!r || typeof r !== "object") continue;
+    const entries = Object.entries(r);
+    const values = entries.map(([, v]) => String(v || "").trim());
+    // Preferimos nombre visible de la columna B (normalmente nombre_proyecto).
+    const colB = values.length >= 2 ? values[1] : "";
+    const id =
+      String(
+        r.id_proyecto ||
+          r.id ||
+          (values.length ? values[0] : "")
+      ).trim();
+    const name =
+      String(
+        r.nombre_proyecto ||
+          r.nombre ||
+          r.proyecto ||
+          colB
+      ).trim();
+    if (!id || !name) continue;
+    if (!out.find((o) => o.value === id)) {
+      out.push({ value: id, label: name });
+    }
+  }
+  return out;
+}
+
+function mapTripOptions_(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (const r of list) {
+    const id = String(r?.id_viaje || "").trim();
+    const estado = String(r?.estado || "").trim().toUpperCase();
+    if (!id || estado === "CERRADO") continue;
+    const fecha = String(r?.fecha_viaje || "").trim();
+    const mat = String(r?.matricula || "").trim().toUpperCase();
+    const origen = String(r?.origen || "").trim();
+    const destino = String(r?.destino || "").trim();
+    const tipoVeh = String(r?.tipo_vehiculo || "").trim().toUpperCase();
+    const prefix = tipoVeh === "ORGANIZACION" ? "Org" : "Propio";
+    const label = [id, fecha, mat, `${origen}→${destino}`].filter(Boolean).join(" · ");
+    out.push({
+      value: id,
+      label: `${prefix} · ${label}`,
+      matricula: mat,
+      proyecto_nombre: String(r?.proyecto_nombre || "").trim(),
+    });
+  }
+  return out;
 }
 
 function extractKmFromOcrText_(text) {
@@ -209,8 +287,9 @@ async function prepareImageUriForOcr_(sourceUri) {
 
 function requiredMissing(state) {
   const errs = [];
-  if (!state.matricula.trim()) errs.push("MATRICULA");
-  if (!state.departamento_o_proyecto || state.departamento_o_proyecto === OTRO_DEPARTAMENTO) {
+  const isKmColab = state.tipo_gasto === "KILOMETRAJE_COLABORADOR";
+  if (!isKmColab && !state.matricula.trim()) errs.push("MATRICULA");
+  if (!isKmColab && (!state.departamento_o_proyecto || state.departamento_o_proyecto === OTRO_DEPARTAMENTO)) {
     if (state.departamento_o_proyecto !== OTRO_DEPARTAMENTO) {
       errs.push("DEPARTAMENTO / PROYECTO");
     } else if (!String(state.departamento_o_proyecto_custom || "").trim()) {
@@ -219,8 +298,24 @@ function requiredMissing(state) {
   }
   if (!state.tipo_gasto) errs.push("TIPO DE GASTO");
   if (!state.forma_pago) errs.push("FORMA DE PAGO");
-  if (!Array.isArray(state.ticketLocalUris) || state.ticketLocalUris.length === 0) {
+  if (!isKmColab && (!Array.isArray(state.ticketLocalUris) || state.ticketLocalUris.length === 0)) {
     errs.push("IMAGEN / TICKET (OBLIGATORIO)");
+  }
+  if (isKmColab) {
+    if (!state.fecha_viaje_colaborador) errs.push("FECHA VIAJE");
+    if (!String(state.km_inicial_colaborador || "").trim()) errs.push("KM INICIAL");
+    if (!String(state.km_final_colaborador || "").trim()) errs.push("KM FINAL");
+    if (!String(state.origen_colaborador || "").trim()) errs.push("ORIGEN");
+    if (!String(state.destino_colaborador || "").trim()) errs.push("DESTINO");
+    if (!String(state.proyecto_colaborador_id || "").trim()) errs.push("PROYECTO A IMPUTAR");
+    if (!String(state.motivo_colaborador || "").trim()) errs.push("MOTIVO");
+    var kmIni = Number(String(state.km_inicial_colaborador || "").replace(",", "."));
+    var kmFin = Number(String(state.km_final_colaborador || "").replace(",", "."));
+    if (Number.isFinite(kmIni) && Number.isFinite(kmFin) && kmFin <= kmIni) {
+      errs.push("KM FINAL (debe ser mayor que KM INICIAL)");
+    }
+    if (!String(state.tarifa_eur_km_aplicada || "").trim()) errs.push("TARIFA EUR/KM");
+    return errs;
   }
 
   switch (state.tipo_gasto) {
@@ -313,8 +408,11 @@ function requiredMissing(state) {
   return errs;
 }
 
-export default function ExpenseFormScreen({ navigation }) {
+export default function ExpenseFormScreen({ navigation, route }) {
   const { user, role } = React.useContext(AuthContext);
+  const colaborador = isColaborador(role);
+  const idViajePropio = String(route?.params?.idViajePropio || "").trim();
+  const viajeContext = route?.params?.viajeContext || null;
   const [form, setForm] = useState(initial);
   const [expenseTypeOptions, setExpenseTypeOptions] = useState(EXPENSE_TYPES);
   const [vehiclesData, setVehiclesData] = useState(() => localDb.getVehiclesMemory());
@@ -326,9 +424,34 @@ export default function ExpenseFormScreen({ navigation }) {
   );
   const [autosaveMsg, setAutosaveMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [ticketOcrBusy, setTicketOcrBusy] = useState(false);
   const [editExpenseId, setEditExpenseId] = useState("");
   const [readingKm, setReadingKm] = useState(false);
   const [lastOcrUri, setLastOcrUri] = useState("");
+  const [projectOptions, setProjectOptions] = useState([]);
+  const [tripOptions, setTripOptions] = useState([]);
+  const departmentProjectOptions = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    const add = (opt) => {
+      const value = String(opt?.value || "").trim();
+      const label = String(opt?.label || "").trim();
+      if (!value || !label || seen.has(value)) return;
+      seen.add(value);
+      out.push({ value, label });
+    };
+    for (const p of projectOptions) add(p);
+    for (const d of DEPARTAMENTOS_O_PROYECTOS) {
+      if (String(d?.value || "") === OTRO_DEPARTAMENTO) continue;
+      add(d);
+    }
+    add({ value: OTRO_DEPARTAMENTO, label: "Añadir otro (escribir)" });
+    return out;
+  }, [projectOptions]);
+  const departmentProjectValues = useMemo(
+    () => new Set(departmentProjectOptions.map((o) => String(o?.value || "").trim())),
+    [departmentProjectOptions]
+  );
   const kmPhotoRequired = useMemo(
     () => ["COMBUSTIBLES", "MANTENIMIENTO_REPARACIONES", "ITV"].includes(String(form.tipo_gasto || "")),
     [form.tipo_gasto]
@@ -369,9 +492,26 @@ export default function ExpenseFormScreen({ navigation }) {
         const cat = await sheetsApi.get("cat_tipos_gasto_list", { user_email: user?.email || "" });
         const rows = Array.isArray(cat?.data) ? cat.data : Array.isArray(cat) ? cat : [];
         const opts = buildExpenseTypeOptions_(rows);
-        if (opts.length) setExpenseTypeOptions(opts);
+        const withKm = opts.some((o) => o.value === "KILOMETRAJE_COLABORADOR")
+          ? opts
+          : [{ value: "KILOMETRAJE_COLABORADOR", label: "KILOMETRAJE COLABORADOR" }, ...opts];
+        if (withKm.length) setExpenseTypeOptions(withKm);
       } catch {
         // fallback a constantes locales
+      }
+      try {
+        const rows = await loadProjectRows_(user?.email || "");
+        const opts = mapProjectOptions_(rows);
+        setProjectOptions(opts);
+      } catch {
+        setProjectOptions([]);
+      }
+      try {
+        const tRes = await sheetsApi.get("viaje_vehiculo_propio_list", { user_email: user?.email || "" });
+        const tRows = Array.isArray(tRes?.data) ? tRes.data : Array.isArray(tRes) ? tRes : [];
+        setTripOptions(mapTripOptions_(tRows));
+      } catch {
+        setTripOptions([]);
       }
     }
     loadVehicles();
@@ -401,10 +541,80 @@ export default function ExpenseFormScreen({ navigation }) {
     if (!dept) return;
     setForm((p) => ({
       ...p,
-      departamento_o_proyecto: DEPARTAMENTOS_O_PROYECTOS_VALID.has(dept) ? dept : OTRO_DEPARTAMENTO,
-      departamento_o_proyecto_custom: DEPARTAMENTOS_O_PROYECTOS_VALID.has(dept) ? "" : dept,
+      departamento_o_proyecto: departmentProjectValues.has(dept) ? dept : OTRO_DEPARTAMENTO,
+      departamento_o_proyecto_custom: departmentProjectValues.has(dept) ? "" : dept,
     }));
-  }, [form.matricula, vehiclesData, form.departamento_o_proyecto]);
+  }, [form.matricula, vehiclesData, form.departamento_o_proyecto, departmentProjectValues]);
+
+  useEffect(() => {
+    if (form.tipo_gasto !== "KILOMETRAJE_COLABORADOR") return;
+    const id = String(form.proyecto_colaborador_id || "").trim();
+    if (!id) return;
+    const match = projectOptions.find((p) => p.value === id);
+    if (!match) return;
+    if (String(form.proyecto_colaborador_nombre || "").trim() === match.label) return;
+    setForm((p) => ({ ...p, proyecto_colaborador_nombre: match.label }));
+  }, [form.tipo_gasto, form.proyecto_colaborador_id, form.proyecto_colaborador_nombre, projectOptions]);
+
+  useEffect(() => {
+    if (form.tipo_gasto !== "KILOMETRAJE_COLABORADOR") return;
+    if (!form.fecha_viaje_colaborador) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await sheetsApi.get("tarifa_km_get_vigente", {
+          fecha_servicio: form.fecha_viaje_colaborador,
+          user_email: user?.email || "",
+        });
+        const data = res?.data || res || {};
+        const eur = Number(String(data?.eur_km || "").replace(",", "."));
+        if (cancelled || !Number.isFinite(eur) || eur < 0) return;
+        setForm((p) => ({ ...p, tarifa_eur_km_aplicada: String(eur) }));
+      } catch {
+        // backend decidirá tarifa en guardado
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [form.tipo_gasto, form.fecha_viaje_colaborador, user?.email]);
+
+  useEffect(() => {
+    if (form.tipo_gasto !== "KILOMETRAJE_COLABORADOR") return;
+    const kmIni = Number(String(form.km_inicial_colaborador || "").replace(",", "."));
+    const kmFin = Number(String(form.km_final_colaborador || "").replace(",", "."));
+    const tarifa = Number(String(form.tarifa_eur_km_aplicada || "").replace(",", "."));
+    if (!Number.isFinite(kmIni) || !Number.isFinite(kmFin) || !Number.isFinite(tarifa) || kmFin < kmIni) {
+      if (String(form.km_recorridos_colaborador || "").trim() || String(form.importe_km_colaborador || "").trim()) {
+        setForm((p) => ({ ...p, km_recorridos_colaborador: "", importe_km_colaborador: "" }));
+      }
+      return;
+    }
+    const kms = kmFin - kmIni;
+    const importe = Number((kms * tarifa).toFixed(2));
+    const kmsStr = String(kms);
+    const importeStr = importe.toFixed(2);
+    if (form.km_recorridos_colaborador === kmsStr && form.importe_km_colaborador === importeStr) return;
+    setForm((p) => ({ ...p, km_recorridos_colaborador: kmsStr, importe_km_colaborador: importeStr }));
+  }, [
+    form.tipo_gasto,
+    form.km_inicial_colaborador,
+    form.km_final_colaborador,
+    form.tarifa_eur_km_aplicada,
+    form.km_recorridos_colaborador,
+    form.importe_km_colaborador,
+  ]);
+
+  useEffect(() => {
+    if (!idViajePropio || !viajeContext) return;
+    setForm((p) => ({
+      ...p,
+      id_viaje_propio: String(p.id_viaje_propio || idViajePropio).trim(),
+      matricula: String(p.matricula || viajeContext?.matricula || "").trim().toUpperCase(),
+      departamento_o_proyecto: String(p.departamento_o_proyecto || viajeContext?.proyecto_nombre || "").trim(),
+      forma_pago: String(p.forma_pago || "Usuario"),
+    }));
+  }, [idViajePropio, viajeContext]);
 
   useEffect(() => {
     if (form.tipo_gasto !== "COMBUSTIBLES") return;
@@ -435,6 +645,87 @@ export default function ExpenseFormScreen({ navigation }) {
   }, [form.tipo_gasto, form.litros_repostados, form.precio_por_litro, form.descuento]);
 
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const applyTicketOcrResult_ = (ocr) => {
+    const dateYmd = String(ocr?.date || "").trim();
+    const dateDmy = dateYmd ? formatYmdToEsDmy(dateYmd) : "";
+    const total = String(ocr?.total || "").trim();
+    const vendor = String(ocr?.vendor || "").trim();
+    const ticketNum = String(ocr?.invoiceNumber || "").trim();
+    setForm((prev) => {
+      const next = { ...prev };
+      switch (String(prev.tipo_gasto || "").trim().toUpperCase()) {
+        case "COMBUSTIBLES":
+          if (total && !next.total_a_pagar) next.total_a_pagar = total;
+          if (dateDmy && !next.fecha_repostaje) next.fecha_repostaje = dateDmy;
+          if (vendor && !next.entidad_combustible) next.entidad_combustible = vendor;
+          if (ticketNum && !next.numero_ticket) next.numero_ticket = ticketNum;
+          break;
+        case "PARKING":
+          if (total && !next.importe_aparcamiento) next.importe_aparcamiento = total;
+          if (dateDmy && !next.fecha_aparcamiento) next.fecha_aparcamiento = dateDmy;
+          if (vendor && !next.entidad_parking) next.entidad_parking = vendor;
+          break;
+        case "PEAJES":
+          if (total && !next.importe_peaje) next.importe_peaje = total;
+          if (dateDmy && !next.fecha_peaje) next.fecha_peaje = dateDmy;
+          if (vendor && !next.entidad_peaje) next.entidad_peaje = vendor;
+          break;
+        case "ITV":
+          if (total && !next.importe_itv) next.importe_itv = total;
+          if (dateDmy && !next.fecha_inspeccion) next.fecha_inspeccion = dateDmy;
+          if (vendor && !next.estacion_itv) next.estacion_itv = vendor;
+          if (ticketNum && !next.numero_factura_itv) next.numero_factura_itv = ticketNum;
+          break;
+        case "REPUESTOS_RECAMBIO":
+          if (total && !next.importe_repuestos) next.importe_repuestos = total;
+          if (dateDmy && !next.fecha_compra_repuestos) next.fecha_compra_repuestos = dateDmy;
+          if (vendor && !next.proveedor_repuestos) next.proveedor_repuestos = vendor;
+          if (ticketNum && !next.numero_factura_repuestos) next.numero_factura_repuestos = ticketNum;
+          break;
+        case "MANTENIMIENTO_REPARACIONES":
+          if (total && !next.importe_mantenimiento) next.importe_mantenimiento = total;
+          if (dateDmy && !next.fecha_compra_mantenimiento) next.fecha_compra_mantenimiento = dateDmy;
+          if (vendor && !next.proveedor_mantenimiento) next.proveedor_mantenimiento = vendor;
+          if (ticketNum && !next.numero_factura_mantenimiento) next.numero_factura_mantenimiento = ticketNum;
+          break;
+        case "OTROS":
+          if (total && !next.importe_otros_gastos) next.importe_otros_gastos = total;
+          if (dateDmy && !next.fecha_otros_gastos) next.fecha_otros_gastos = dateDmy;
+          if (vendor && !next.proveedor_otros_gastos) next.proveedor_otros_gastos = vendor;
+          if (ticketNum && !next.numero_factura_otros) next.numero_factura_otros = ticketNum;
+          break;
+        default:
+          if (total && !next.importe) next.importe = total;
+          if (dateDmy && !next.fecha) next.fecha = dateDmy;
+          break;
+      }
+      return next;
+    });
+  };
+
+  const runTicketOcr = async () => {
+    const firstTicket = Array.isArray(form.ticketLocalUris) ? String(form.ticketLocalUris[0] || "").trim() : "";
+    if (!firstTicket) {
+      Alert.alert("Sin ticket", "Primero adjunta al menos una imagen de ticket.");
+      return;
+    }
+    try {
+      setTicketOcrBusy(true);
+      const extracted = await syncService.extractTicketDataFromLocalUri(firstTicket);
+      applyTicketOcrResult_(extracted);
+      const lines = [];
+      if (extracted?.date) lines.push(`Fecha: ${extracted.date}`);
+      if (extracted?.total) lines.push(`Importe: ${extracted.total}`);
+      if (extracted?.vendor) lines.push(`Proveedor: ${extracted.vendor}`);
+      if (extracted?.invoiceNumber) lines.push(`Nº ticket/factura: ${extracted.invoiceNumber}`);
+      Alert.alert("OCR ticket", lines.length ? `Datos detectados:\n${lines.join("\n")}\n\nSe han aplicado al formulario.` : "Lectura completada.");
+    } catch (e) {
+      Alert.alert("OCR ticket no disponible", e?.message || "No se pudieron extraer datos del ticket.");
+    } finally {
+      setTicketOcrBusy(false);
+    }
+  };
 
   const readKmFromPhoto = async (uri) => {
     const photoUri = String(uri || "").trim();
@@ -504,7 +795,8 @@ export default function ExpenseFormScreen({ navigation }) {
         form.departamento_o_proyecto === OTRO_DEPARTAMENTO
           ? String(form.departamento_o_proyecto_custom || "").trim()
           : String(form.departamento_o_proyecto || "").trim();
-      if (!departamento_o_proyecto) {
+      const isKmColab = form.tipo_gasto === "KILOMETRAJE_COLABORADOR";
+      if (!isKmColab && !departamento_o_proyecto) {
         Alert.alert("Falta proyecto/departamento", "Selecciona un departamento/proyecto o escribe uno nuevo.");
         return;
       }
@@ -531,7 +823,24 @@ export default function ExpenseFormScreen({ navigation }) {
         kilometros_actuales: String(form.kilometros_actuales || "").trim(),
         odometro_local_uri: String(form.odometroLocalUri || "").trim(),
         responsable_email: String(user?.email || "").trim().toLowerCase(),
-        departamento_o_proyecto, // sobrescribe el valor "__OTRO__" si aplica
+        departamento_o_proyecto: isKmColab
+          ? String(form.proyecto_colaborador_nombre || "").trim()
+          : departamento_o_proyecto,
+        fecha: isKmColab ? String(form.fecha_viaje_colaborador || "").trim() : String(form.fecha || "").trim(),
+        km_inicial_colaborador: String(form.km_inicial_colaborador || "").trim(),
+        km_final_colaborador: String(form.km_final_colaborador || "").trim(),
+        km_recorridos_colaborador: String(form.km_recorridos_colaborador || "").trim(),
+        origen_colaborador: String(form.origen_colaborador || "").trim(),
+        destino_colaborador: String(form.destino_colaborador || "").trim(),
+        id_proyecto: String(form.proyecto_colaborador_id || "").trim(),
+        proyecto_nombre: String(form.proyecto_colaborador_nombre || "").trim(),
+        id_viaje_propio: String(form.id_viaje_propio || idViajePropio || "").trim(),
+        motivo_colaborador: String(form.motivo_colaborador || "").trim(),
+        accion_colaborador: String(form.accion_colaborador || "").trim(),
+        tarifa_eur_km_aplicada: String(form.tarifa_eur_km_aplicada || "").trim(),
+        importe_km_colaborador: String(form.importe_km_colaborador || "").trim(),
+        coste_total: isKmColab ? Number(String(form.importe_km_colaborador || "0").replace(",", ".")) || 0 : undefined,
+        importe_sin_iva: isKmColab ? Number(String(form.importe_km_colaborador || "0").replace(",", ".")) || 0 : undefined,
         usuario_uid: user?.uid || "",
         usuario_email: user?.email || "",
         usuario_rol: role || "",
@@ -569,8 +878,14 @@ export default function ExpenseFormScreen({ navigation }) {
         "Guardado",
         editExpenseId
           ? "Gasto actualizado. Si estaba pendiente de sincronizar, se ha actualizado también en la cola."
-          : "Registro guardado. La sincronización de adjuntos continúa en segundo plano."
+          : (idViajePropio || form.id_viaje_propio)
+            ? "Gasto de viaje guardado y asociado al viaje. Se sincronizará en segundo plano."
+            : "Registro guardado. La sincronización de adjuntos continúa en segundo plano."
       );
+      if ((idViajePropio || form.id_viaje_propio) && !editExpenseId) {
+        navigation.goBack();
+        return;
+      }
       setEditExpenseId("");
       setForm(initial);
       await localDb.setExpensesDraft(null);
@@ -583,30 +898,17 @@ export default function ExpenseFormScreen({ navigation }) {
 
   return (
     <ScrollView style={styles.safe} contentContainerStyle={styles.content}>
-      <Header title="Introducción gastos" onBack={() => navigation.navigate("Menu")} />
+      <Header title={idViajePropio ? "Gasto de viaje vehículo propio" : "Introducción gastos"} onBack={() => navigation.navigate("Menu")} />
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>VEHICULO</Text>
-        <SelectField label="MATRICULA" required value={form.matricula} onChange={(v) => set("matricula", v)} options={vehicleSelectOptions} />
-        <SelectField
-          label="DEPARTAMENTO / PROYECTO"
-          required
-          value={form.departamento_o_proyecto}
-          onChange={(v) => set("departamento_o_proyecto", v)}
-          options={DEPARTAMENTOS_O_PROYECTOS}
-        />
-        {form.departamento_o_proyecto === OTRO_DEPARTAMENTO ? (
-          <TextField
-            label="Proyecto/departamento (nuevo)"
-            required
-            value={form.departamento_o_proyecto_custom}
-            onChangeText={(v) => set("departamento_o_proyecto_custom", v)}
-            placeholder="Escribe aquí"
-          />
-        ) : null}
-
         <Text style={styles.sectionTitle}>GASTOS</Text>
-        <SelectField label="TIPO DE GASTO" required value={form.tipo_gasto} onChange={(v) => set("tipo_gasto", normalizeExpenseType_(v))} options={expenseTypeOptions} />
+        <SelectField
+          label="TIPO DE GASTO"
+          required
+          value={form.tipo_gasto}
+          onChange={(v) => set("tipo_gasto", normalizeExpenseType_(v))}
+          options={expenseTypeOptions}
+        />
         <SelectField
           label="FORMA DE PAGO"
           required
@@ -614,14 +916,114 @@ export default function ExpenseFormScreen({ navigation }) {
           onChange={(v) => set("forma_pago", v)}
           options={PAYMENT_METHODS.map((m) => ({ value: m, label: m }))}
         />
+        <SelectField
+          label="ASIGNAR A VIAJE INICIADO (opcional)"
+          required={false}
+          value={form.id_viaje_propio}
+          onChange={(v) => {
+            const id = String(v || "").trim();
+            const selected = tripOptions.find((t) => t.value === id);
+            setForm((p) => ({
+              ...p,
+              id_viaje_propio: id,
+              matricula: String(p.matricula || selected?.matricula || "").trim().toUpperCase(),
+              departamento_o_proyecto: String(p.departamento_o_proyecto || selected?.proyecto_nombre || "").trim(),
+            }));
+          }}
+          options={[{ value: "", label: "Sin viaje" }, ...tripOptions]}
+        />
+        {form.tipo_gasto !== "KILOMETRAJE_COLABORADOR" ? (
+          <>
+            <Text style={styles.sectionTitle}>VEHICULO</Text>
+            {colaborador ? (
+              <TextField
+                label="MATRICULA"
+                required
+                value={form.matricula}
+                onChangeText={(v) => set("matricula", String(v || "").toUpperCase())}
+                placeholder="Introduce matrícula libre"
+                autoCapitalize="characters"
+              />
+            ) : (
+              <SelectField label="MATRICULA" required value={form.matricula} onChange={(v) => set("matricula", v)} options={vehicleSelectOptions} />
+            )}
+            <SelectField
+              label="DEPARTAMENTO / PROYECTO"
+              required
+              value={form.departamento_o_proyecto}
+              onChange={(v) => set("departamento_o_proyecto", v)}
+              options={departmentProjectOptions}
+            />
+            {form.departamento_o_proyecto === OTRO_DEPARTAMENTO ? (
+              <TextField
+                label="Proyecto/departamento (nuevo)"
+                required
+                value={form.departamento_o_proyecto_custom}
+                onChangeText={(v) => set("departamento_o_proyecto_custom", v)}
+                placeholder="Escribe aquí"
+              />
+            ) : null}
+          </>
+        ) : (
+          <>
+            <Text style={styles.sectionTitle}>VIAJE COLABORADOR</Text>
+            <DateField
+              label="FECHA"
+              required
+              value={form.fecha_viaje_colaborador}
+              onChange={(v) => set("fecha_viaje_colaborador", v)}
+            />
+            <TextField
+              label="KM INICIAL"
+              required
+              value={form.km_inicial_colaborador}
+              onChangeText={(v) => set("km_inicial_colaborador", String(v || "").replace(/[^\d]/g, ""))}
+              keyboardType="number-pad"
+            />
+            <TextField
+              label="KM FINAL"
+              required
+              value={form.km_final_colaborador}
+              onChangeText={(v) => set("km_final_colaborador", String(v || "").replace(/[^\d]/g, ""))}
+              keyboardType="number-pad"
+            />
+            <TextField label="ORIGEN" required value={form.origen_colaborador} onChangeText={(v) => set("origen_colaborador", v)} />
+            <TextField label="DESTINO" required value={form.destino_colaborador} onChangeText={(v) => set("destino_colaborador", v)} />
+            <SelectField
+              label="PROYECTO A IMPUTAR"
+              required
+              value={form.proyecto_colaborador_id}
+              onChange={(v) => set("proyecto_colaborador_id", v)}
+              options={[{ value: "", label: projectOptions.length ? "Selecciona..." : "Sin proyectos en PROYECTOS" }, ...projectOptions]}
+            />
+            <TextField label="MOTIVO" required value={form.motivo_colaborador} onChangeText={(v) => set("motivo_colaborador", v)} multiline />
+            <TextField label="ACCIÓN (opcional)" required={false} value={form.accion_colaborador} onChangeText={(v) => set("accion_colaborador", v)} />
+            <TextField
+              label="TARIFA EUR/KM"
+              required
+              value={form.tarifa_eur_km_aplicada}
+              onChangeText={(v) => set("tarifa_eur_km_aplicada", String(v || "").replace(",", "."))}
+              keyboardType="decimal-pad"
+            />
+            <TextField label="KM RECORRIDOS (AUTO)" required value={form.km_recorridos_colaborador} onChangeText={() => {}} editable={false} />
+            <TextField label="IMPORTE KM (AUTO)" required value={form.importe_km_colaborador} onChangeText={() => {}} editable={false} />
+          </>
+        )}
 
         <ImageField
           label="Imagen ticket"
-          required
+          required={form.tipo_gasto !== "KILOMETRAJE_COLABORADOR"}
           multiple
           valueUris={form.ticketLocalUris}
           onChangeUri={(arr) => set("ticketLocalUris", arr)}
         />
+        <Pressable
+          style={[styles.ocrActionBtn, ticketOcrBusy && styles.ocrActionBtnDisabled]}
+          onPress={runTicketOcr}
+          disabled={ticketOcrBusy}
+        >
+          <Text style={styles.ocrActionText}>{ticketOcrBusy ? "Leyendo ticket..." : "Leer ticket (OCR)"}</Text>
+        </Pressable>
         {kmPhotoRequired ? (
           <>
             <ImageField
@@ -801,6 +1203,19 @@ const styles = StyleSheet.create({
   autosave: { color: theme.colors.subtext, fontSize: 12, marginTop: 4 },
   ocrRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: -4, marginBottom: 8 },
   ocrText: { color: theme.colors.subtext, fontSize: 12 },
+  ocrActionBtn: {
+    marginTop: -2,
+    marginBottom: 10,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.card2,
+  },
+  ocrActionBtnDisabled: { opacity: 0.7 },
+  ocrActionText: { color: theme.colors.text, fontWeight: "800", fontSize: 12 },
   saveBtn: { backgroundColor: theme.colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", borderWidth: 1, borderColor: "#5fb7ff" },
   saveText: { color: theme.colors.text, fontWeight: "900", fontSize: 16 },
 });

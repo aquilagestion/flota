@@ -21,6 +21,7 @@ import {
   canApproveExpenseSheets,
   canManageResponsableSolicitudes,
   isAdministracion,
+  isColaborador,
   isGestor,
   isResponsable,
   roleLabel,
@@ -73,6 +74,7 @@ export default function MenuScreen({ navigation }) {
   const { logout, role, user, changePassword, syncRoleFromUsersSheet } = useContext(AuthContext);
   const gestor = isGestor(role);
   const responsable = isResponsable(role);
+  const colaborador = isColaborador(role);
   const administracion = isAdministracion(role);
   const canApproveSheets = canApproveExpenseSheets(role);
   const canSolicitudesResp = canManageResponsableSolicitudes(role);
@@ -180,15 +182,16 @@ export default function MenuScreen({ navigation }) {
     const out = [];
     const add = (id, label, icon, onPress, opts = {}) => out.push({ id, label, icon, onPress, ...opts });
 
-    add("veh", "Vehículos", "car-outline", () => navigation.navigate("Vehiculos"));
+    if (!colaborador) add("veh", "Vehículos", "car-outline", () => navigation.navigate("Vehiculos"));
 
     if (!administracion) {
       add("gasto", "Gastos", "cash-multiple", () => navigation.navigate("Gasto"));
-      add("mant", "Mantenimiento", "wrench-outline", () => navigation.navigate("Mantenimiento"));
-      add("hist", "Historial", "history", () => navigation.navigate("Historial"));
+      if (!colaborador) add("mant", "Mantenimiento", "wrench-outline", () => navigation.navigate("Mantenimiento"));
+      add("hist", colaborador ? "Mis gastos" : "Historial", "history", () => navigation.navigate("Historial"));
       add("hojas", "Hojas gasto", "file-document-outline", () => navigation.navigate("HojasGasto"));
-      add("uso", "Uso vehículos", "calendar-range", () => navigation.navigate("Solicitudes"));
+      if (!colaborador) add("uso", "Uso vehículos", "calendar-range", () => navigation.navigate("Solicitudes"));
     }
+    add("veh_prop", "Grabar viajes", "car-estate", () => navigation.navigate("VehiculoPropio"));
 
     if (canApproveSheets) {
       add("aprob", "Aprobaciones", "clipboard-check-outline", () => navigation.navigate("Aprobaciones"));
@@ -199,8 +202,11 @@ export default function MenuScreen({ navigation }) {
     if (canSolicitudesResp) {
       add("solresp", "Rol responsable", "account-arrow-up-outline", () => navigation.navigate("SolicitudesResponsable"));
     }
-    if (gestor && !administracion) {
+    if (gestor && !administracion && !colaborador) {
       add("dest", "Destinos", "folder-cog-outline", () => navigation.navigate("Destinos"));
+    }
+    if (colaborador) {
+      add("perfil_colab", "Mis datos colaborador", "account-edit-outline", () => navigation.navigate("PerfilColaborador"));
     }
 
     if (!administracion) {
@@ -223,6 +229,7 @@ export default function MenuScreen({ navigation }) {
     administracion,
     canApproveSheets,
     canSolicitudesResp,
+    colaborador,
     gestor,
     navigation,
     outboxCount,

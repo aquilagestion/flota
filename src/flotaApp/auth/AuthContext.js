@@ -63,6 +63,23 @@ function parseUserRow_(raw) {
   return { email, role, activo, nombre, pwd, telefono, fecha_alta };
 }
 
+function parseColaboradorRow_(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const email = String(raw.email || "").trim().toLowerCase();
+  if (!email) return null;
+  return {
+    id_colaborador: String(raw.id_colaborador || "").trim(),
+    email,
+    nombre: String(raw.nombre || "").trim(),
+    nif: String(raw.nif || "").trim(),
+    iban: String(raw.iban || "").trim(),
+    telefono: String(raw.telefono || "").trim(),
+    activo: String(raw.activo ?? "SI")
+      .trim()
+      .toUpperCase(),
+  };
+}
+
 async function fetchUserFromUsersSheetByEmail_(email) {
   const e = String(email || "").trim().toLowerCase();
   if (!e) return null;
@@ -222,6 +239,45 @@ async function updatePasswordInUsersSheet_(email, newPassword, userEmailForMeta)
   };
 
   await upsertUsuarioEnSheets_(payload, userEmailForMeta || e);
+}
+
+async function upsertColaboradorEnSheets_(payload, userEmailForMeta) {
+  const actions = ["colaborador_guardar", "colaborador_upsert", "colaborador_crear"];
+  let lastErr = null;
+  for (const action of actions) {
+    try {
+      await sheetsApi.post(action, payload, {
+        user_email: userEmailForMeta || payload.email_colaborador || payload.email || "",
+      });
+      return true;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return false;
+}
+
+async function fetchColaboradorByEmail_(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return null;
+  const actions = ["colaborador_get", "colaborador_list"];
+  for (const action of actions) {
+    try {
+      const res = await sheetsApi.get(action, { email: e, user_email: e });
+      if (action === "colaborador_get") {
+        const c = parseColaboradorRow_(res?.data || res);
+        if (c) return c;
+      } else {
+        const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        const found = rows.map(parseColaboradorRow_).find((c) => c && c.email === e);
+        if (found) return found;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return null;
 }
 
 async function loadLocalUser_() {
@@ -397,6 +453,14 @@ export function AuthProvider({ children }) {
         const e = email.trim().toLowerCase();
         const nombre = String(extra?.nombre || "").trim();
         const roleRequested = normalizeRole(extra?.role || ROLES.OPERARIO);
+        const colaboradorExtra = {
+          nombre_colaborador: String(extra?.nombre || "").trim(),
+          telefono: String(extra?.telefono || "").trim(),
+          nif: String(extra?.nif || "").trim(),
+          iban: String(extra?.iban || "").trim(),
+          email_colaborador: e,
+          activo_colaborador: "SI",
+        };
         if (!nombre) throw new Error("El nombre completo es obligatorio.");
 
         if (!firebaseAvailable || !firebaseAuth) {
@@ -407,7 +471,12 @@ export function AuthProvider({ children }) {
           }
 
           // Si pide RESPONSABLE, entra como OPERARIO hasta aprobación de gestor.
-          const effectiveRole = roleRequested === ROLES.RESPONSABLE ? ROLES.OPERARIO : ROLES.OPERARIO;
+          const effectiveRole =
+            roleRequested === ROLES.COLABORADOR
+              ? ROLES.COLABORADOR
+              : roleRequested === ROLES.RESPONSABLE
+              ? ROLES.OPERARIO
+              : ROLES.OPERARIO;
           try {
             await registerUsuarioPublicoEnSheets_({
               email: e,
@@ -426,6 +495,10 @@ export function AuthProvider({ children }) {
               );
             }
             throw eReg;
+          }
+
+          if (effectiveRole === ROLES.COLABORADOR) {
+            await upsertColaboradorEnSheets_(colaboradorExtra, e);
           }
 
           let requestSent = false;
@@ -453,7 +526,12 @@ export function AuthProvider({ children }) {
         const createdFirebaseUser = firebaseAuth.currentUser;
 
         // Refleja también el alta en USUARIOS para flujos corporativos con Sheets.
-        const effectiveRole = roleRequested === ROLES.RESPONSABLE ? ROLES.OPERARIO : ROLES.OPERARIO;
+          const effectiveRole =
+            roleRequested === ROLES.COLABORADOR
+              ? ROLES.COLABORADOR
+              : roleRequested === ROLES.RESPONSABLE
+              ? ROLES.OPERARIO
+              : ROLES.OPERARIO;
         try {
           await upsertUsuarioEnSheets_(
             {
@@ -500,6 +578,9 @@ export function AuthProvider({ children }) {
             },
             e
           );
+        }
+        if (effectiveRole === ROLES.COLABORADOR) {
+          await upsertColaboradorEnSheets_(colaboradorExtra, e);
         }
         return { requestedRole: roleRequested, requestSent };
       },
@@ -579,6 +660,46 @@ export function AuthProvider({ children }) {
         }
 
         await updatePasswordInUsersSheet_(email, nextPwd, email);
+      },
+      async getColaboradorProfile() {
+        const email = String(user?.email || "").trim().toLowerCase();
+        if (!email) return null;
+        return fetchColaboradorByEmail_(email);
+      },
+      async updateColaboradorProfile(data = {}) {
+        const email = String(user?.email || "").trim().toLowerCase();
+        if (!email) throw new Error("No hay usuario autenticado.");
+        const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
+        if (!sheetUser) throw new Error("Usuario no encontrado en USUARIOS.");
+        const userPayload = {
+          email,
+          nombre: String(data.nombre || sheetUser.nombre || "").trim(),
+          rol: normalizeRole(sheetUser.role || role || ROLES.COLABORADOR),
+          activo: sheetUser.activo ? "SI" : "NO",
+          telefono: String(data.telefono || sheetUser.telefono || "").trim(),
+          pwd: String(sheetUser.pwd || ""),
+          fecha_alta: String(sheetUser.fecha_alta || "").trim() || todayDmy_(),
+          actor_email: email,
+          actualizado_por_email: email,
+        };
+        try {
+          // Autoedición del propio perfil sin requerir permisos de gestor/admin.
+          await registerUsuarioPublicoEnSheets_(userPayload);
+        } catch {
+          // Compatibilidad con despliegues antiguos que no exponen endpoint público.
+          await upsertUsuarioEnSheets_(userPayload, email);
+        }
+        await upsertColaboradorEnSheets_(
+          {
+            email_colaborador: email,
+            nombre_colaborador: String(data.nombre || sheetUser.nombre || "").trim(),
+            telefono: String(data.telefono || "").trim(),
+            nif: String(data.nif || "").trim(),
+            iban: String(data.iban || "").trim(),
+            activo_colaborador: "SI",
+          },
+          email
+        );
       },
     }),
     [user, role, booting]

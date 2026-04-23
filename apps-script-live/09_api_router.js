@@ -158,6 +158,18 @@ function doGet(e) {
       return out;
     }
 
+    if (action === "proyecto_list_columna_b") {
+      const out = jsonOk(
+        apiProyectoListColumnaB({
+          solo_activos: e.parameter.solo_activos || "SI",
+          user_email: e.parameter.user_email || "",
+        }),
+        "Proyectos (columna B) obtenidos"
+      );
+      logApi_(action, "GET", user, "success", "OK");
+      return out;
+    }
+
     if (action === "proyecto_get") {
       const out = jsonOk(
         apiProyectoGet({
@@ -200,6 +212,30 @@ function doGet(e) {
           fecha_servicio: e.parameter.fecha_servicio || e.parameter.fecha || "",
         }),
         "Tarifa vigente obtenida"
+      );
+      logApi_(action, "GET", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "viaje_vehiculo_propio_list") {
+      const out = jsonOk(
+        apiViajeVehiculoPropioList({
+          estado: e.parameter.estado || "",
+          user_email: e.parameter.user_email || "",
+        }),
+        "Viajes de vehículo propio obtenidos"
+      );
+      logApi_(action, "GET", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "viaje_vehiculo_propio_detalle") {
+      const out = jsonOk(
+        apiViajeVehiculoPropioDetalle({
+          id_viaje: e.parameter.id_viaje || "",
+          user_email: e.parameter.user_email || "",
+        }),
+        "Detalle de viaje de vehículo propio obtenido"
       );
       logApi_(action, "GET", user, "success", "OK");
       return out;
@@ -428,6 +464,24 @@ function doPost(e) {
 
     if (action === "gasto_servicio_eliminar") {
       const out = jsonOk(apiGastoServicioEliminar(body), "Gasto de servicio eliminado");
+      logApi_(action, "POST", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "viaje_vehiculo_propio_crear") {
+      const out = jsonOk(apiViajeVehiculoPropioCrear(body), "Viaje de vehículo propio creado");
+      logApi_(action, "POST", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "viaje_vehiculo_propio_actualizar") {
+      const out = jsonOk(apiViajeVehiculoPropioActualizar(body), "Viaje de vehículo propio actualizado");
+      logApi_(action, "POST", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "viaje_vehiculo_propio_cerrar") {
+      const out = jsonOk(apiViajeVehiculoPropioCerrar(body), "Viaje de vehículo propio cerrado");
       logApi_(action, "POST", user, "success", "OK");
       return out;
     }

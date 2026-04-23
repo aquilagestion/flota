@@ -9,7 +9,10 @@ export default function LoginScreen() {
   const { login, register } = useContext(AuthContext);
   const [mode, setMode] = useState("login"); // login | register
   const [fullName, setFullName] = useState("");
-  const [requestedRole, setRequestedRole] = useState(ROLES.OPERARIO);
+  const [requestedRole, setRequestedRole] = useState(ROLES.COLABORADOR);
+  const [telefono, setTelefono] = useState("");
+  const [nif, setNif] = useState("");
+  const [iban, setIban] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
@@ -53,11 +56,18 @@ export default function LoginScreen() {
         const result = await register(e, password, {
           nombre: fullName.trim(),
           role: requestedRole,
+          telefono: telefono.trim(),
+          nif: nif.trim(),
+          iban: iban.trim(),
         });
-        if (requestedRole === ROLES.RESPONSABLE) {
+        if (
+          requestedRole === ROLES.RESPONSABLE ||
+          requestedRole === ROLES.GESTOR ||
+          requestedRole === ROLES.ADMINISTRACION
+        ) {
           Alert.alert("Solicitud enviada", "En breve recibirá un correo en la cuenta indicada informandole sobre la resolución. Gracias");
         } else {
-          Alert.alert("Alta completada", "Usuario creado correctamente como OPERARIO.");
+          Alert.alert("Alta completada", `Usuario creado correctamente como ${requestedRole}.`);
         }
       }
     } catch (err) {
@@ -84,10 +94,20 @@ export default function LoginScreen() {
               value={requestedRole}
               onChange={(v) => setRequestedRole(v)}
               options={[
+                { value: ROLES.COLABORADOR, label: "COLABORADOR" },
                 { value: ROLES.OPERARIO, label: "OPERARIO" },
-                { value: ROLES.RESPONSABLE, label: "RESPONSABLE (requiere aprobación de GESTOR)" },
+                { value: ROLES.RESPONSABLE, label: "RESPONSABLE (requiere aprobación de GESTOR/ADMINISTRACION)" },
+                { value: ROLES.GESTOR, label: "GESTOR (requiere aprobación de ADMINISTRACION)" },
+                { value: ROLES.ADMINISTRACION, label: "ADMINISTRACION (requiere aprobación de ADMINISTRACION)" },
               ]}
             />
+            {requestedRole === ROLES.COLABORADOR ? (
+              <>
+                <TextField label="Teléfono" required={false} value={telefono} onChangeText={setTelefono} placeholder="Teléfono" />
+                <TextField label="NIF" required={false} value={nif} onChangeText={setNif} placeholder="NIF" />
+                <TextField label="IBAN" required={false} value={iban} onChangeText={setIban} placeholder="IBAN" />
+              </>
+            ) : null}
           </>
         ) : null}
 
@@ -154,7 +174,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "flex-start", padding: 16, paddingTop: 28 },
   logoWrap: { width: "100%", alignItems: "center", marginBottom: 10 },
-  logo: { width: 92, height: 92, borderRadius: 18 },
+  logo: { width: 92, height: 92, borderRadius: 18, backgroundColor: "#ffffff" },
   card: {
     width: "100%",
     maxWidth: 440,

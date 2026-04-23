@@ -1,4 +1,5 @@
 export const EXPENSE_TYPES = [
+  { value: "KILOMETRAJE_COLABORADOR", label: "KILOMETRAJE COLABORADOR" },
   { value: "SEGURO", label: "SEGURO" },
   { value: "IMPUESTOS", label: "IMPUESTOS" },
   { value: "OTROS_IMPUESTOS", label: "OTROS IMPUESTOS" },

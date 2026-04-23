@@ -1,7 +1,9 @@
 export const ROLES = {
+  USUARIO: "USUARIO",
   GESTOR: "GESTOR",
   ADMINISTRACION: "ADMINISTRACION",
   RESPONSABLE: "RESPONSABLE",
+  COLABORADOR: "COLABORADOR",
   OPERARIO: "OPERARIO",
 };
 
@@ -14,7 +16,9 @@ export function normalizeRole(role) {
   if (v === ROLES.GESTOR) return ROLES.GESTOR;
   if (v === ROLES.ADMINISTRACION || v === "ADMINISTRACION") return ROLES.ADMINISTRACION;
   if (v === "ADMIN") return ROLES.ADMINISTRACION;
+  if (v === ROLES.USUARIO) return ROLES.USUARIO;
   if (v === ROLES.RESPONSABLE) return ROLES.RESPONSABLE;
+  if (v === ROLES.COLABORADOR) return ROLES.COLABORADOR;
   if (v === ROLES.OPERARIO) return ROLES.OPERARIO;
   return ROLES.OPERARIO;
 }
@@ -29,6 +33,10 @@ export function isResponsable(role) {
 
 export function isAdministracion(role) {
   return normalizeRole(role) === ROLES.ADMINISTRACION;
+}
+
+export function isColaborador(role) {
+  return normalizeRole(role) === ROLES.COLABORADOR;
 }
 
 export function canApproveRequests(role) {

@@ -436,6 +436,12 @@ export default function RequestsScreen({ navigation }) {
   const [dispHoraDesde, setDispHoraDesde] = useState("");
   const [dispHoraHasta, setDispHoraHasta] = useState("");
   const [dispResult, setDispResult] = useState(null);
+  const [dispModal, setDispModal] = useState({
+    visible: false,
+    rangeLabel: "",
+    available: [],
+    busy: [],
+  });
   const [dayDetailModal, setDayDetailModal] = useState({
     visible: false,
     title: "",
@@ -824,13 +830,20 @@ export default function RequestsScreen({ navigation }) {
       else if (flotaVehiculoEstaActivo_(v)) available.push(v);
     }
 
-    setDispResult({
+    const next = {
       from: fromRaw,
       to: toRaw,
       fromHour: fromHourRaw,
       toHour: toHourRaw,
       available,
       busy,
+    };
+    setDispResult(next);
+    setDispModal({
+      visible: true,
+      rangeLabel: `${displayDateLabel_(next.from)} ${next.fromHour || ""} → ${displayDateLabel_(next.to)} ${next.toHour || ""}`.trim(),
+      available: next.available,
+      busy: next.busy,
     });
   };
 
@@ -1115,50 +1128,7 @@ export default function RequestsScreen({ navigation }) {
           <Pressable style={styles.button} onPress={calcularDisponibilidades}>
             <Text style={styles.buttonTextSmall}>Comprobar disponibilidades</Text>
           </Pressable>
-          {dispResult ? (
-            <View style={{ marginTop: 10 }}>
-              <Text style={styles.message}>
-                Rango: {displayDateLabel_(dispResult.from)} {dispResult.fromHour || ""} → {displayDateLabel_(dispResult.to)} {dispResult.toHour || ""}
-              </Text>
-              <Text style={styles.message}>Disponibles: {dispResult.available.length}</Text>
-              {dispResult.available.map((v) => (
-                <Text key={`ok-${v.matricula}`} style={styles.okText}>
-                  {[v.matricula, v.marca, v.modelo].filter(Boolean).join(" · ")}
-                </Text>
-              ))}
-              <Text style={[styles.message, { marginTop: 8 }]}>
-                No disponibles (solicitud aprobada o pendiente en el rango): {dispResult.busy.length}
-              </Text>
-              {dispResult.busy.map((v) => {
-                const ov = v?.overlap;
-                const hi = ov ? formatHoraMostrar_(ov.hora_inicio) : "";
-                const hf = ov ? formatHoraMostrar_(ov.hora_fin) : "";
-                return (
-                  <View key={`busy-${v.matricula}-${ov?.id_solicitud || ""}`} style={styles.busyBlock}>
-                    <Text style={styles.warnText}>{[v.matricula, v.marca, v.modelo].filter(Boolean).join(" · ")}</Text>
-                    {ov ? (
-                      <>
-                        <Text style={styles.messageSmall}>
-                          Inicio: {displayDateLabel_(String(ov.fecha_inicio || "").trim())}
-                          {hi ? ` · ${hi}` : ""}
-                        </Text>
-                        <Text style={styles.messageSmall}>
-                          Fin: {displayDateLabel_(String(ov.fecha_fin || "").trim())}
-                          {hf ? ` · ${hf}` : ""}
-                        </Text>
-                        <Text style={styles.messageSmall}>
-                          Solicitante: {String(ov.trabajador_nombre || "").trim() || "—"} ({String(ov.trabajador_email || "").trim() || "—"})
-                        </Text>
-                        <Text style={styles.messageSmall}>Motivo: {String(ov.motivo || "").trim() || "—"}</Text>
-                      </>
-                    ) : (
-                      <Text style={styles.messageSmall}>Sin detalle de reserva</Text>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
+          {dispResult ? <Text style={[styles.message, { marginTop: 8 }]}>Resultado: {dispResult.available.length} disponibles · {dispResult.busy.length} ocupados.</Text> : null}
         </View>
       ) : null}
 
@@ -1303,6 +1273,77 @@ export default function RequestsScreen({ navigation }) {
             </ScrollView>
 
             <Pressable style={[styles.buttonSecondary, { marginTop: 10 }]} onPress={() => setDayDetailModal((p) => ({ ...p, visible: false }))}>
+              <Text style={styles.buttonTextSmall}>Cerrar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={dispModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDispModal((p) => ({ ...p, visible: false }))}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Disponibilidades</Text>
+            <Text style={styles.modalSub}>Rango: {dispModal.rangeLabel || "—"}</Text>
+            <Text style={styles.modalSub}>Disponibles: {dispModal.available.length}</Text>
+            <ScrollView style={{ maxHeight: 200 }}>
+              {dispModal.available.map((v) => (
+                <Pressable
+                  key={`disp-r-${v.matricula}`}
+                  style={styles.modalPickRow}
+                  onPress={() => {
+                    setDispModal((p) => ({ ...p, visible: false }));
+                    setVista("SOLICITUDES");
+                    setMatricula(String(v?.matricula || "").trim().toUpperCase());
+                    if (dispDesde) setFechaInicio(dispDesde);
+                    if (dispHasta) setFechaFin(dispHasta);
+                    setHoraInicio(String(dispHoraDesde || "").trim());
+                    setHoraFin(String(dispHoraHasta || "").trim());
+                  }}
+                >
+                  <Text style={styles.okText}>{[v.matricula, v.marca, v.modelo].filter(Boolean).join(" · ")}</Text>
+                  <Text style={styles.modalPickHint}>Toca para abrir formulario de solicitud con este vehículo</Text>
+                </Pressable>
+              ))}
+              {dispModal.available.length === 0 ? <Text style={styles.message}>Sin vehículos disponibles</Text> : null}
+            </ScrollView>
+            <Text style={[styles.modalSub, { marginTop: 8 }]}>Ocupados: {dispModal.busy.length}</Text>
+            <ScrollView style={{ maxHeight: 220 }}>
+              {dispModal.busy.map((v) => {
+                const ov = v?.overlap;
+                const hi = ov ? formatHoraMostrar_(ov.hora_inicio) : "";
+                const hf = ov ? formatHoraMostrar_(ov.hora_fin) : "";
+                return (
+                  <View key={`busy-r-${v.matricula}-${ov?.id_solicitud || ""}`} style={styles.busyBlock}>
+                    <Text style={styles.warnText}>{[v.matricula, v.marca, v.modelo].filter(Boolean).join(" · ")}</Text>
+                    {ov ? (
+                      <>
+                        <Text style={styles.messageSmall}>
+                          Inicio: {displayDateLabel_(String(ov.fecha_inicio || "").trim())}
+                          {hi ? ` · ${hi}` : ""}
+                        </Text>
+                        <Text style={styles.messageSmall}>
+                          Fin: {displayDateLabel_(String(ov.fecha_fin || "").trim())}
+                          {hf ? ` · ${hf}` : ""}
+                        </Text>
+                        <Text style={styles.messageSmall}>
+                          Solicitante: {String(ov.trabajador_nombre || "").trim() || "—"} ({String(ov.trabajador_email || "").trim() || "—"})
+                        </Text>
+                        <Text style={styles.messageSmall}>Motivo: {String(ov.motivo || "").trim() || "—"}</Text>
+                      </>
+                    ) : (
+                      <Text style={styles.messageSmall}>Sin detalle de reserva</Text>
+                    )}
+                  </View>
+                );
+              })}
+              {dispModal.busy.length === 0 ? <Text style={styles.message}>Sin vehículos ocupados</Text> : null}
+            </ScrollView>
+            <Pressable style={[styles.buttonSecondary, { marginTop: 10 }]} onPress={() => setDispModal((p) => ({ ...p, visible: false }))}>
               <Text style={styles.buttonTextSmall}>Cerrar</Text>
             </Pressable>
           </View>

@@ -9,6 +9,7 @@ import { env } from "../config/env";
 const DEFAULT_CORP_DRIVE_FOLDER_ID = "1QIff1sdYQYdr1rd2JA1ua7iF579Mrcdv";
 const DEFAULT_CORP_SPREADSHEET_ID = "1v6YJ7Y3KjSUUaTog8tuw1elircOR5dbPZaddNkZ4gGY";
 const DEFAULT_ODOMETER_OCR_URL = "http://192.168.0.53:8080";
+const DEFAULT_TICKET_OCR_URL = "http://192.168.0.53:8080";
 
 function uuid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -86,6 +87,20 @@ function getOdometerOcrCandidates_() {
   return out;
 }
 
+function getTicketOcrCandidates_() {
+  const fromEnv = String(env.ticketOcrUrl || env.odometerOcrUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const candidates = ["http://127.0.0.1:8080", "http://10.0.2.2:8080", fromEnv, DEFAULT_TICKET_OCR_URL];
+  const out = [];
+  for (const c of candidates) {
+    const v = String(c || "").trim().replace(/\/+$/, "");
+    if (!v) continue;
+    if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
 async function postOdometerToPythonOcr_({ safeUri, base64, mime, base }) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -129,6 +144,86 @@ async function postOdometerToPythonOcr_({ safeUri, base64, mime, base }) {
   const km = parseKm_(raw);
   if (!km) throw new Error("OCR Python sin km");
   return { km, raw: raw || km, provider: "python" };
+}
+
+function normalizeTicketAmount_(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const clean = raw.replace(/[^\d,.-]/g, "").replace(/\.(?=.*\.)/g, "");
+  let n = Number(clean.replace(",", "."));
+  if (!Number.isFinite(n)) {
+    const m = raw.match(/(\d+[.,]\d{2})/);
+    n = m ? Number(String(m[1]).replace(",", ".")) : NaN;
+  }
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n.toFixed(2);
+}
+
+function normalizeTicketDate_(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  const d = new Date(s);
+  if (!Number.isFinite(d.getTime())) return "";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function postTicketToPythonOcr_({ safeUri, base64, mime, base }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+  }, 14000);
+  let res;
+  try {
+    res = await fetch(`${base}/ticket/extract`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file_name: `ticket-${uuid()}.jpg`,
+        mime_type: mime,
+        image_uri: safeUri,
+        base64,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") throw new Error(`OCR ticket timeout en ${base}`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  if (!res.ok) {
+    const detail = json?.detail || json?.message || text || `HTTP ${res.status}`;
+    throw new Error(`OCR ticket HTTP ${res.status}: ${detail}`);
+  }
+  const data = json?.data && typeof json.data === "object" ? json.data : json || {};
+  const total = normalizeTicketAmount_(
+    data.total ?? data.importe_total ?? data.amount ?? data.total_amount ?? data.importe ?? data.precio_total
+  );
+  const date = normalizeTicketDate_(data.fecha ?? data.date ?? data.ticket_date ?? data.fecha_ticket);
+  const vendor = String(data.vendor ?? data.comercio ?? data.proveedor ?? data.establecimiento ?? "").trim();
+  const invoiceNumber = String(data.invoice_number ?? data.numero_factura ?? data.ticket_number ?? data.numero_ticket ?? "").trim();
+  if (!total && !date && !vendor && !invoiceNumber) {
+    throw new Error("OCR ticket sin datos útiles");
+  }
+  return { total, date, vendor, invoiceNumber, raw: data, provider: "python" };
 }
 
 async function uriToBase64_(safeUri) {
@@ -478,6 +573,28 @@ export const syncService = {
       }
     }
     throw new Error(`OCR no disponible: ${String(lastErr?.message || "sin detalle")}`);
+  },
+  async extractTicketDataFromLocalUri(localUri) {
+    const normalized = normalizeLocalUri_(localUri);
+    const safeUri = await optimizeImageForOcr_(normalized);
+    const info = await FileSystem.getInfoAsync(safeUri);
+    const size = Number(info?.size || 0);
+    if (size > 10 * 1024 * 1024) {
+      throw new Error("La foto del ticket es muy grande. Haz una foto más cerca y vuelve a intentarlo.");
+    }
+    const base64 = await uriToBase64_(safeUri);
+    const mime = guessMimeTypeFromUri_(safeUri);
+    const bases = getTicketOcrCandidates_();
+    if (!bases.length) throw new Error("No hay endpoint OCR de ticket configurado.");
+    let lastErr = null;
+    for (const base of bases) {
+      try {
+        return await postTicketToPythonOcr_({ safeUri, base64, mime, base });
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new Error(`OCR ticket no disponible: ${String(lastErr?.message || "sin detalle")}`);
   },
 };
 

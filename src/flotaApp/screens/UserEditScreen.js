@@ -82,9 +82,11 @@ export default function UserEditScreen({ navigation, route }) {
           value={item.rol}
           onChange={(v) => setItem((p) => ({ ...p, rol: normalizeRole(v) }))}
           options={[
+            { value: ROLES.USUARIO, label: ROLES.USUARIO },
             { value: ROLES.GESTOR, label: ROLES.GESTOR },
             { value: ROLES.ADMINISTRACION, label: ROLES.ADMINISTRACION },
             { value: ROLES.RESPONSABLE, label: ROLES.RESPONSABLE },
+            { value: ROLES.COLABORADOR, label: ROLES.COLABORADOR },
             { value: ROLES.OPERARIO, label: ROLES.OPERARIO },
           ]}
         />

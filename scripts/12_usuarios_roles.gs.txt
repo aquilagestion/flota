@@ -1,0 +1,297 @@
+// ======================================================================
+// 12_usuarios_roles.gs
+// Gestion de usuarios/roles desde pestana USUARIOS.
+//
+// Header base:
+// email | nombre | rol | activo | pwd | fecha_alta
+//
+// Columnas extendidas (se crean automaticamente si faltan):
+// telefono | rol_solicitado | estado_aprobacion_rol | aprobado_por | fecha_aprobacion_rol
+//
+// Roles soportados:
+// USUARIO | COLABORADOR | RESPONSABLE | GESTOR | ADMINISTRACION | OPERARIO
+//
+// Reglas:
+// - Registro publico: USUARIO/COLABORADOR/OPERARIO se asignan directo.
+// - Si se solicita RESPONSABLE/GESTOR/ADMINISTRACION -> queda rol=USUARIO y
+//   estado_aprobacion_rol=PENDIENTE hasta aprobación de GESTOR/ADMINISTRACION.
+// ======================================================================
+
+function normalizeRol_(rol) {
+  var v = String(rol || "").trim().toUpperCase();
+  if (
+    v !== "USUARIO" &&
+    v !== "COLABORADOR" &&
+    v !== "RESPONSABLE" &&
+    v !== "GESTOR" &&
+    v !== "ADMINISTRACION" &&
+    v !== "OPERARIO"
+  ) {
+    return "USUARIO";
+  }
+  return v;
+}
+
+function isRolSensible_(rol) {
+  var r = normalizeRol_(rol);
+  return r === "RESPONSABLE" || r === "GESTOR" || r === "ADMINISTRACION";
+}
+
+function normalizeActivo_(activo) {
+  var v = String(activo == null ? "SI" : activo).trim().toUpperCase();
+  return v === "SI" || v === "TRUE" || v === "1" ? "SI" : "NO";
+}
+
+function normalizeEstadoAprobacionRol_(estado) {
+  var v = String(estado || "").trim().toUpperCase();
+  if (v !== "PENDIENTE" && v !== "APROBADA" && v !== "RECHAZADA") return "";
+  return v;
+}
+
+function getUsuariosSheet_() {
+  return getSheet("USUARIOS");
+}
+
+function ensureUsuariosHeaders_() {
+  var sh = getUsuariosSheet_();
+  var required = [
+    "email",
+    "nombre",
+    "rol",
+    "activo",
+    "pwd",
+    "fecha_alta",
+    "telefono",
+    "rol_solicitado",
+    "estado_aprobacion_rol",
+    "aprobado_por",
+    "fecha_aprobacion_rol",
+  ];
+
+  var headers = getHeaders_(sh);
+  if (!headers || !headers.length) {
+    sh.getRange(1, 1, 1, required.length).setValues([required]);
+    return required;
+  }
+
+  var missing = [];
+  for (var i = 0; i < required.length; i++) {
+    if (headers.indexOf(required[i]) < 0) missing.push(required[i]);
+  }
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+    headers = getHeaders_(sh);
+  }
+  return headers;
+}
+
+function rowToUsuarioObj_(headers, row) {
+  var obj = {};
+  for (var c = 0; c < headers.length; c++) obj[headers[c]] = row[c];
+
+  obj.email = String(obj.email || "").trim().toLowerCase();
+  obj.nombre = String(obj.nombre || "").trim();
+  obj.rol = normalizeRol_(obj.rol);
+  obj.activo = normalizeActivo_(obj.activo);
+  obj.telefono = String(obj.telefono || "").trim();
+  obj.rol_solicitado = normalizeRol_(obj.rol_solicitado || "");
+  obj.estado_aprobacion_rol = normalizeEstadoAprobacionRol_(obj.estado_aprobacion_rol);
+  obj.aprobado_por = String(obj.aprobado_por || "").trim().toLowerCase();
+  obj.fecha_aprobacion_rol = String(obj.fecha_aprobacion_rol || "").trim();
+  obj.fecha_alta = String(obj.fecha_alta || "").trim();
+  return obj;
+}
+
+function apiUsuariosList() {
+  var sh = getUsuariosSheet_();
+  var headers = ensureUsuariosHeaders_();
+  var all = sh.getDataRange().getValues();
+  if (!all || all.length < 2) return [];
+
+  var out = [];
+  for (var i = 1; i < all.length; i++) {
+    var obj = rowToUsuarioObj_(headers, all[i]);
+    if (!obj.email) continue;
+    out.push(obj);
+  }
+  return out;
+}
+
+function apiUsuarioGet(payload) {
+  payload = payload || {};
+  var email = String(payload.email || payload.user_email || "").trim().toLowerCase();
+  if (!email) throw new Error("Falta campo: email");
+
+  var list = apiUsuariosList();
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].email || "").trim().toLowerCase() === email) return list[i];
+  }
+  return null;
+}
+
+function canApproveRolesByEmail_(email) {
+  var em = String(email || "").trim().toLowerCase();
+  if (!em) return false;
+  var u = apiUsuarioGet({ email: em });
+  if (!u) return false;
+  if (normalizeActivo_(u.activo) !== "SI") return false;
+  var rol = normalizeRol_(u.rol);
+  return rol === "GESTOR" || rol === "ADMINISTRACION";
+}
+
+function apiUsuarioGuardar(payload) {
+  payload = payload || {};
+  var email = String(payload.email || "").trim().toLowerCase();
+  if (!email) throw new Error("Falta campo: email");
+
+  var actorEmail = String(payload.actor_email || payload.user_email || payload.actualizado_por_email || "")
+    .trim()
+    .toLowerCase();
+  var actorPuedeAprobar = canApproveRolesByEmail_(actorEmail);
+
+  var sh = getUsuariosSheet_();
+  var headers = ensureUsuariosHeaders_();
+  var all = sh.getDataRange().getValues();
+
+  var idxEmail = headers.indexOf("email");
+  if (idxEmail < 0) throw new Error("No existe columna email en USUARIOS");
+
+  var updateRow = -1;
+  for (var r = 1; r < all.length; r++) {
+    var current = String(all[r][idxEmail] || "").trim().toLowerCase();
+    if (current === email) {
+      updateRow = r;
+      break;
+    }
+  }
+  var isUpdate = updateRow >= 0;
+
+  var requestedRol = normalizeRol_(payload.rol || payload.role || "USUARIO");
+  var rolFinal = requestedRol;
+  var rolSolicitado = requestedRol;
+  var estadoAprob = "APROBADA";
+  var aprobadoPor = "";
+  var fechaAprob = "";
+
+  if (isRolSensible_(requestedRol) && !actorPuedeAprobar) {
+    rolFinal = "USUARIO";
+    rolSolicitado = requestedRol;
+    estadoAprob = "PENDIENTE";
+  } else if (isRolSensible_(requestedRol) && actorPuedeAprobar) {
+    rolFinal = requestedRol;
+    rolSolicitado = requestedRol;
+    estadoAprob = "APROBADA";
+    aprobadoPor = actorEmail;
+    fechaAprob = normalizeDateDMYCell_(new Date());
+  } else {
+    rolFinal = requestedRol; // USUARIO / COLABORADOR / OPERARIO
+    rolSolicitado = requestedRol;
+    estadoAprob = "APROBADA";
+    if (actorPuedeAprobar) {
+      aprobadoPor = actorEmail;
+      fechaAprob = normalizeDateDMYCell_(new Date());
+    }
+  }
+
+  var rowObj = {
+    email: email,
+    nombre: String(payload.nombre || "").trim(),
+    rol: rolFinal,
+    activo: normalizeActivo_(payload.activo),
+    telefono: String(payload.telefono || "").trim(),
+    rol_solicitado: rolSolicitado,
+    estado_aprobacion_rol: estadoAprob,
+    aprobado_por: aprobadoPor,
+    fecha_aprobacion_rol: fechaAprob,
+  };
+
+  if (payload.pwd !== undefined) rowObj.pwd = String(payload.pwd || "");
+
+  if (payload.fecha_alta !== undefined && String(payload.fecha_alta || "").trim() !== "") {
+    rowObj.fecha_alta = String(payload.fecha_alta).trim();
+  } else if (!isUpdate) {
+    rowObj.fecha_alta = normalizeDateDMYCell_(new Date());
+  }
+
+  if (isUpdate) {
+    for (var c = 0; c < headers.length; c++) {
+      var h = headers[c];
+      if (rowObj[h] !== undefined) sh.getRange(updateRow + 1, c + 1).setValue(rowObj[h]);
+    }
+    return {
+      email: email,
+      updated: true,
+      rol: rowObj.rol,
+      rol_solicitado: rowObj.rol_solicitado,
+      estado_aprobacion_rol: rowObj.estado_aprobacion_rol,
+    };
+  }
+
+  if (!rowObj.fecha_alta) rowObj.fecha_alta = normalizeDateDMYCell_(new Date());
+  appendRowByHeaders_(sh, rowObj);
+
+  return {
+    email: email,
+    created: true,
+    rol: rowObj.rol,
+    rol_solicitado: rowObj.rol_solicitado,
+    estado_aprobacion_rol: rowObj.estado_aprobacion_rol,
+  };
+}
+
+function apiUsuarioResolverRolSolicitado(payload) {
+  payload = payload || {};
+  var email = String(payload.email || "").trim().toLowerCase();
+  var decision = String(payload.decision || "").trim().toUpperCase();
+  var actorEmail = String(payload.actor_email || payload.user_email || "").trim().toLowerCase();
+
+  if (!email) throw new Error("Falta campo: email");
+  if (decision !== "APROBAR" && decision !== "RECHAZAR") {
+    throw new Error("decision invalida. Usa APROBAR o RECHAZAR.");
+  }
+  if (!canApproveRolesByEmail_(actorEmail)) throw new Error("No autorizado para resolver roles");
+
+  var sh = getUsuariosSheet_();
+  var headers = ensureUsuariosHeaders_();
+  var all = sh.getDataRange().getValues();
+
+  var idxEmail = headers.indexOf("email");
+  var idxRol = headers.indexOf("rol");
+  var idxRolSolic = headers.indexOf("rol_solicitado");
+  var idxEstado = headers.indexOf("estado_aprobacion_rol");
+  var idxAprobPor = headers.indexOf("aprobado_por");
+  var idxFechaAprob = headers.indexOf("fecha_aprobacion_rol");
+
+  var row = -1;
+  for (var r = 1; r < all.length; r++) {
+    var em = String(all[r][idxEmail] || "").trim().toLowerCase();
+    if (em === email) {
+      row = r + 1;
+      break;
+    }
+  }
+  if (row < 0) throw new Error("Usuario no encontrado");
+
+  var rolSolicitado = normalizeRol_(sh.getRange(row, idxRolSolic + 1).getValue());
+  if (!isRolSensible_(rolSolicitado)) {
+    throw new Error("No hay rol sensible pendiente para este usuario");
+  }
+
+  if (decision === "APROBAR") {
+    sh.getRange(row, idxRol + 1).setValue(rolSolicitado);
+    sh.getRange(row, idxEstado + 1).setValue("APROBADA");
+  } else {
+    sh.getRange(row, idxRol + 1).setValue("USUARIO");
+    sh.getRange(row, idxEstado + 1).setValue("RECHAZADA");
+  }
+
+  sh.getRange(row, idxAprobPor + 1).setValue(actorEmail);
+  sh.getRange(row, idxFechaAprob + 1).setValue(normalizeDateDMYCell_(new Date()));
+
+  return {
+    email: email,
+    decision: decision,
+    rol_final: String(sh.getRange(row, idxRol + 1).getValue() || "").trim(),
+    estado_aprobacion_rol: String(sh.getRange(row, idxEstado + 1).getValue() || "").trim(),
+  };
+}

@@ -18,7 +18,9 @@ import HelpScreen from "../screens/HelpScreen";
 import VehicleEditScreen from "../screens/VehicleEditScreen";
 import VehicleCreateScreen from "../screens/VehicleCreateScreen";
 import UserEditScreen from "../screens/UserEditScreen";
-import { isAdministracion } from "../auth/roles";
+import CollaboratorProfileScreen from "../screens/CollaboratorProfileScreen";
+import OwnVehicleTripsScreen from "../screens/OwnVehicleTripsScreen";
+import { isAdministracion, isColaborador } from "../auth/roles";
 
 const Stack = createNativeStackNavigator();
 
@@ -53,7 +55,7 @@ function Splash() {
         style={[styles.logo, { transform: [{ scale: zoom }] }]}
         resizeMode="contain"
       />
-      <Text style={styles.brandText}>GREFA 45 anos generando Biodiversidad</Text>
+      <Text style={styles.brandText}>GREFA 45 años generando Biodiversidad</Text>
       <ActivityIndicator />
       <Text style={styles.credit}>Creada por Miguel Montero con soporte de Cursor IA</Text>
     </View>
@@ -63,6 +65,7 @@ function Splash() {
 export default function AppNavigator() {
   const { user, role, booting } = useContext(AuthContext);
   const administracion = isAdministracion(role);
+  const colaborador = isColaborador(role);
   const [minSplashDone, setMinSplashDone] = useState(false);
 
   useEffect(() => {
@@ -80,19 +83,21 @@ export default function AppNavigator() {
         <>
           <Stack.Screen name="Menu" component={MenuScreen} />
           <Stack.Screen name="Ayuda" component={HelpScreen} />
-          <Stack.Screen name="Vehiculos" component={VehiclesScreen} />
-          <Stack.Screen name="VehiculoNuevo" component={VehicleCreateScreen} />
-          <Stack.Screen name="VehiculoEditar" component={VehicleEditScreen} />
+          {!colaborador ? <Stack.Screen name="Vehiculos" component={VehiclesScreen} /> : null}
+          {!colaborador ? <Stack.Screen name="VehiculoNuevo" component={VehicleCreateScreen} /> : null}
+          {!colaborador ? <Stack.Screen name="VehiculoEditar" component={VehicleEditScreen} /> : null}
           <Stack.Screen name="Aprobaciones" component={ApprovalsScreen} />
           <Stack.Screen name="SolicitudesResponsable" component={ResponsableSolicitudesScreen} />
           <Stack.Screen name="Usuarios" component={UsersAdminScreen} />
           <Stack.Screen name="UsuarioEditar" component={UserEditScreen} />
-          {!administracion ? <Stack.Screen name="Gasto" component={ExpenseFormScreen} /> : null}
-          {!administracion ? <Stack.Screen name="Mantenimiento" component={MaintenanceFormScreen} /> : null}
+          <Stack.Screen name="VehiculoPropio" component={OwnVehicleTripsScreen} />
+          {!administracion ? <Stack.Screen name="PerfilColaborador" component={CollaboratorProfileScreen} /> : null}
+          <Stack.Screen name="Gasto" component={ExpenseFormScreen} />
+          {!administracion && !colaborador ? <Stack.Screen name="Mantenimiento" component={MaintenanceFormScreen} /> : null}
           {!administracion ? <Stack.Screen name="Historial" component={HistoryScreen} /> : null}
           {!administracion ? <Stack.Screen name="HojasGasto" component={ExpenseSheetsScreen} /> : null}
-          {!administracion ? <Stack.Screen name="Destinos" component={DestinationsScreen} /> : null}
-          {!administracion ? <Stack.Screen name="Solicitudes" component={RequestsScreen} /> : null}
+          {!administracion && !colaborador ? <Stack.Screen name="Destinos" component={DestinationsScreen} /> : null}
+          {!administracion && !colaborador ? <Stack.Screen name="Solicitudes" component={RequestsScreen} /> : null}
         </>
       )}
     </Stack.Navigator>
@@ -101,7 +106,7 @@ export default function AppNavigator() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#071423", paddingHorizontal: 18, gap: 14 },
-  logo: { width: 110, height: 110, borderRadius: 24, marginBottom: 4 },
+  logo: { width: 110, height: 110, borderRadius: 24, marginBottom: 4, backgroundColor: "#ffffff" },
   brandText: { color: "#e8f5ff", fontSize: 20, fontWeight: "700", letterSpacing: 0.3, textAlign: "center", marginBottom: 2 },
   credit: { color: "#9ec4e9", fontWeight: "800", textAlign: "center", fontSize: 12 },
 });

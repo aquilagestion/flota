@@ -146,6 +146,30 @@ function doGet(e) {
       return out;
     }
 
+    if (action === "colaborador_get") {
+      const out = jsonOk(
+        apiColaboradorGet({
+          email: e.parameter.email || "",
+          user_email: e.parameter.user_email || "",
+        }),
+        "Colaborador obtenido"
+      );
+      logApi_(action, "GET", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "colaborador_list") {
+      const out = jsonOk(
+        apiColaboradorList({
+          solo_activos: e.parameter.solo_activos || "SI",
+          user_email: e.parameter.user_email || "",
+        }),
+        "Colaboradores obtenidos"
+      );
+      logApi_(action, "GET", user, "success", "OK");
+      return out;
+    }
+
     if (action === "proyecto_list") {
       const out = jsonOk(
         apiProyectoList({
@@ -228,6 +252,7 @@ function doPost(e) {
     user = String(
       body.user_email ||
         body.actualizado_por_email ||
+        body.actor_email ||
         body.trabajador_email ||
         body.responsable_email ||
         body.resuelto_por_email ||
@@ -332,15 +357,14 @@ function doPost(e) {
 
     if (action === "usuario_registro_publico") {
       const payload = {
-        email: String(body.email || "")
-          .trim()
-          .toLowerCase(),
+        email: String(body.email || "").trim().toLowerCase(),
         nombre: String(body.nombre || "").trim(),
-        rol: "OPERARIO",
+        rol: String(body.rol || "USUARIO").trim().toUpperCase(),
         activo: "SI",
         pwd: String(body.pwd || "").trim(),
         fecha_alta: body.fecha_alta || normalizeDateDMYCell_(new Date()),
         telefono: String(body.telefono || "").trim(),
+        actor_email: String(body.actor_email || body.user_email || "").trim().toLowerCase(),
       };
 
       if (!payload.email) {
@@ -364,8 +388,15 @@ function doPost(e) {
       return out;
     }
 
-    if (action === "odometro_extraer") {
-      const out = jsonOk(apiOdometroExtraer(body), "Lectura odometro extraida");
+    if (action === "usuario_resolver_rol_solicitado") {
+      requireRolGestorOrAdministracion_(user);
+      const out = jsonOk(apiUsuarioResolverRolSolicitado(body), "Solicitud de rol resuelta");
+      logApi_(action, "POST", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "colaborador_guardar" || action === "colaborador_upsert" || action === "colaborador_crear") {
+      const out = jsonOk(apiColaboradorGuardar(body), "Colaborador guardado");
       logApi_(action, "POST", user, "success", "OK");
       return out;
     }
@@ -428,6 +459,12 @@ function doPost(e) {
 
     if (action === "gasto_servicio_eliminar") {
       const out = jsonOk(apiGastoServicioEliminar(body), "Gasto de servicio eliminado");
+      logApi_(action, "POST", user, "success", "OK");
+      return out;
+    }
+
+    if (action === "odometro_extraer") {
+      const out = jsonOk(apiOdometroExtraer(body), "Lectura odometro extraida");
       logApi_(action, "POST", user, "success", "OK");
       return out;
     }
