@@ -8,6 +8,7 @@ import { ticketFetchUrlForEmbed, ticketUrlToDataUri_ } from "../../flotaWeb/lib/
 
 const LOGO_MODULES = {
   grefa: require("../../../assets/expense-sheets/logo-grefa-header.png"),
+  grefaSello: require("../../../assets/expense-sheets/logo-grefa-sello.png"),
   pygargus: require("../../../assets/expense-sheets/logo-life-pygargus.png"),
   abilas: require("../../../assets/expense-sheets/logo-life-abilas.png"),
   rhodopes: require("../../../assets/expense-sheets/logo-life-rhodopes.png"),
@@ -48,10 +49,12 @@ export async function loadExpenseSheetLogosForTemplate(templateId) {
   const isLife = templateId !== EXPENSE_SHEET_TEMPLATE.GREFA_RELACION;
   const lifeKey = logoAssetKeyForTemplate(templateId);
   const grefa = await moduleToDataUri_(LOGO_MODULES.grefa);
-  if (!isLife) return { grefa, lifeProject: "", lifeNatura: "" };
+  const grefaSello = await moduleToDataUri_(LOGO_MODULES.grefaSello);
+  if (!isLife) return { grefa, grefaSello, lifeProject: "", lifeNatura: "" };
   const lifeMod = LOGO_MODULES[lifeKey] || LOGO_MODULES.pygargus;
   return {
     grefa,
+    grefaSello,
     lifeProject: await moduleToDataUri_(lifeMod),
     lifeNatura: await moduleToDataUri_(LOGO_MODULES.natura2000),
   };

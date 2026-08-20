@@ -4,7 +4,12 @@ import {
   numberedOptionValuesForField,
 } from "./expenseVoiceNumberedSelect";
 import { stripNumberedSelectPrefix } from "../../flotaWeb/lib/numberedSelectOptions";
-import { isPrimarilyVoiceIndexPick, parseOptionIndex_, stripPromptEchoFromTranscript } from "./expenseVoiceParse";
+import {
+  isPrimarilyVoiceIndexPick,
+  normalizeVoiceMenuIndexUtterance,
+  parseOptionIndex_,
+  stripPromptEchoFromTranscript,
+} from "./expenseVoiceParse";
 
 /** Campos con listas largas: filtrar por voz/texto + lista en pantalla. */
 export const FILTER_FIRST_VOICE_SELECT_KEYS = new Set(["departamento_o_proyecto", "marca_combustible"]);
@@ -45,6 +50,108 @@ export function voiceSelectOptionsForField(field) {
     .filter(Boolean);
 }
 
+function isVoiceMenuIndexOnlyUtterance_(raw, maxIndex = 99) {
+  const t = normalizeVoiceMenuIndexUtterance(raw);
+  if (!t) return false;
+  if (!isPrimarilyVoiceIndexPick(t, maxIndex)) return false;
+  const withoutIndexNoise = t
+    .replace(/\b(opcion|numero|el|la|de|del)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const idx = parseOptionIndex_(t, maxIndex);
+  if (idx == null) return false;
+  const idxStr = String(idx);
+  const spoken = SPOKEN_INDEX_[idx] || "";
+  if (withoutIndexNoise === idxStr || withoutIndexNoise === spoken) return true;
+  if (/^(\d\s*){1,2}$/.test(withoutIndexNoise)) return true;
+  if (
+    /^(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)(\s+(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve))?$/.test(
+      withoutIndexNoise
+    )
+  ) {
+    return true;
+  }
+  if (/^veinti(uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)$/.test(withoutIndexNoise)) return true;
+  if (tokensAreOnlyIndexWords_(withoutIndexNoise)) return true;
+  return withoutIndexNoise.length <= 14;
+}
+
+const SPOKEN_INDEX_ = {
+  1: "uno",
+  2: "dos",
+  3: "tres",
+  4: "cuatro",
+  5: "cinco",
+  6: "seis",
+  7: "siete",
+  8: "ocho",
+  9: "nueve",
+  10: "diez",
+  11: "once",
+  12: "doce",
+  13: "trece",
+  14: "catorce",
+  15: "quince",
+  16: "dieciseis",
+  17: "diecisiete",
+  18: "dieciocho",
+  19: "diecinueve",
+  20: "veinte",
+  21: "veintiuno",
+  22: "veintidos",
+  23: "veintitres",
+  24: "veinticuatro",
+  25: "veinticinco",
+  26: "veintiseis",
+  27: "veintisiete",
+  28: "veintiocho",
+  29: "veintinueve",
+  30: "treinta",
+};
+
+function tokensAreOnlyIndexWords_(t) {
+  const words = String(t || "")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length || words.length > 4) return false;
+  const ok = new Set([
+    "uno",
+    "un",
+    "una",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciseis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiuno",
+    "veintidos",
+    "veintitres",
+    "veinticuatro",
+    "veinticinco",
+    "veintiseis",
+    "veintisiete",
+    "veintiocho",
+    "veintinueve",
+    "treinta",
+    "y",
+  ]);
+  return words.every((w) => ok.has(w) || /^\d{1,2}$/.test(w));
+}
+
 /**
  * Filtra y ordena opciones por relevancia.
  * @param {{ value: string, label: string }[]} options
@@ -54,6 +161,9 @@ export function filterVoiceSelectOptions(options, query) {
   const list = Array.isArray(options) ? options : [];
   const q = norm_(query);
   if (!q) return list.slice();
+
+  // No filtrar por enunciados que son solo un número de menú («21», «veintiuno», «2 1»).
+  if (isVoiceMenuIndexOnlyUtterance_(q, Math.max(list.length, 40))) return [];
 
   const tokens = q.split(/\s+/).filter((t) => t.length > 0);
 
@@ -69,6 +179,7 @@ export function filterVoiceSelectOptions(options, query) {
 
       let tokenHits = 0;
       for (const tok of tokens) {
+        if (tok.length < 2) continue; // evita que «2» o «1» marquen casi todo
         if (label.includes(tok) || value.includes(tok)) tokenHits += 1;
       }
       if (tokenHits > 0) score += tokenHits * 15;
@@ -81,11 +192,93 @@ export function filterVoiceSelectOptions(options, query) {
     .map((x) => x.opt);
 }
 
+/**
+ * Resolución inteligente para departamento/proyecto (y similares):
+ * 1) número de lista («veintiuno», «2-1», «dos uno») sobre la lista completa
+ * 2) filtro por nombre solo si no es un índice
+ */
+export function resolveFilterFirstVoiceSelect(transcript, options, field = null) {
+  const list = Array.isArray(options) ? options : [];
+  if (!list.length) return { kind: "none", message: "No hay opciones cargadas." };
+
+  const raw0 = String(transcript || "").trim();
+  if (!raw0) return { kind: "none" };
+
+  const cleaned = field ? stripPromptEchoFromTranscript(field, raw0) || raw0 : raw0;
+  const candidates = [...new Set([cleaned, raw0].map((s) => normalizeVoiceMenuIndexUtterance(s)).filter(Boolean))];
+
+  for (const cand of candidates) {
+    const idx = parseOptionIndex_(cand, list.length);
+    if (idx != null && idx >= 1 && idx <= list.length && isPrimarilyVoiceIndexPick(cand, list.length)) {
+      const opt = list[idx - 1];
+      if (opt && String(opt.value) !== "__OTRO__") {
+        return {
+          kind: "pick",
+          option: opt,
+          index: idx,
+          heard: cand,
+          message: `Número ${idx}: ${stripNumberedSelectPrefix(opt.label || opt.value)}`,
+        };
+      }
+    }
+  }
+
+  const heard = candidates[0] || normalizeVoiceMenuIndexUtterance(cleaned);
+  if (isVoiceMenuIndexOnlyUtterance_(heard, Math.max(list.length, 40))) {
+    const idx = parseOptionIndex_(heard, list.length);
+    return {
+      kind: "miss_number",
+      index: idx,
+      heard,
+      message:
+        idx != null
+          ? `El número ${idx} no está en la lista (hay ${list.length}).`
+          : "No entendí el número. Pruebe «veintiuno» o «dos uno».",
+    };
+  }
+
+  const filtered = filterVoiceSelectOptions(list, heard);
+  if (filtered.length === 1) {
+    return {
+      kind: "pick",
+      option: filtered[0],
+      heard,
+      message: stripNumberedSelectPrefix(filtered[0].label || filtered[0].value),
+    };
+  }
+  if (filtered.length > 1) {
+    const numPick = tryPickVoiceSelectOption(heard, filtered, field);
+    if (numPick) {
+      return {
+        kind: "pick",
+        option: numPick,
+        heard,
+        message: stripNumberedSelectPrefix(numPick.label || numPick.value),
+      };
+    }
+    return {
+      kind: "filter",
+      options: filtered,
+      heard,
+      message:
+        filtered.length > VOICE_SELECT_CANDIDATE_CAP
+          ? `Hay ${filtered.length} coincidencias. Sea más concreto o diga el número.`
+          : `${filtered.length} coincidencias. Diga el número de la lista filtrada.`,
+    };
+  }
+
+  return {
+    kind: "miss_name",
+    heard,
+    message: "No encuentro esa opción. Diga el número («veintiuno», «2 1») o parte del nombre.",
+  };
+}
+
 /** Elige opción por índice 1-based sobre la lista filtrada actual. */
 export function pickVoiceSelectByIndex(filteredOptions, rawTranscript) {
   const list = Array.isArray(filteredOptions) ? filteredOptions : [];
   if (!list.length) return null;
-  const raw = String(rawTranscript || "").trim();
+  const raw = normalizeVoiceMenuIndexUtterance(rawTranscript);
   if (!raw || !isPrimarilyVoiceIndexPick(raw, list.length)) return null;
   const idx = parseOptionIndex_(raw, list.length);
   if (idx == null || idx < 1 || idx > list.length) return null;
@@ -99,10 +292,10 @@ export function tryPickVoiceSelectOption(transcript, filteredOptions, field = nu
   const raw0 = String(transcript || "").trim();
   if (!raw0) return null;
 
-  const candidates = [raw0];
+  const candidates = [normalizeVoiceMenuIndexUtterance(raw0)];
   if (field) {
     const cleaned = stripPromptEchoFromTranscript(field, raw0);
-    if (cleaned) candidates.unshift(cleaned);
+    if (cleaned) candidates.unshift(normalizeVoiceMenuIndexUtterance(cleaned));
   }
 
   for (const cand of [...new Set(candidates.filter(Boolean))]) {
@@ -120,13 +313,13 @@ export function buildFilterFirstSelectIntro(field) {
   }
   const numberHint =
     field?.key === "departamento_o_proyecto"
-      ? " Diga el número en palabras («veintiuno», «quince»…) o cifra a cifra («dos uno»)."
+      ? " Para el número diga «veintiuno» o cifra a cifra «dos uno»."
       : " Diga el número de la lista en palabras o con dígitos.";
   return (
     `${label}. Hay ${n} opciones. ` +
-    `Diga parte del nombre para acotar, el número de la lista, o toque en pantalla.` +
+    `Diga el número de la lista, parte del nombre, o toque en pantalla.` +
     numberHint +
-    ` También puede escribir para filtrar. «Salta» para omitir.`
+    ` «Salta» para omitir.`
   );
 }
 
@@ -150,8 +343,49 @@ export const VOICE_SELECT_FILTER_MIN_LEN = 2;
 export function isVoiceSelectNumberUtterance(rawTranscript, filteredOptions) {
   const list = Array.isArray(filteredOptions) ? filteredOptions : [];
   if (!list.length) return false;
-  const idx = parseOptionIndex_(rawTranscript);
-  return idx != null && idx >= 1 && idx <= list.length;
+  return isVoiceMenuIndexOnlyUtterance_(rawTranscript, list.length);
+}
+
+/** Pistas para el reconocedor (mejora «veintiuno», «dos uno»…). */
+export function voiceSelectContextualStrings(field, options = []) {
+  const list = Array.isArray(options) && options.length ? options : voiceSelectOptionsForField(field);
+  const n = Math.min(list.length, 45);
+  const out = [
+    "uno",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciséis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiuno",
+    "veintidós",
+    "veintitrés",
+    "veinticuatro",
+    "veinticinco",
+    "opción",
+    "número",
+    "salta",
+  ];
+  for (let i = 1; i <= n; i += 1) out.push(String(i));
+  for (const opt of list.slice(0, 30)) {
+    const name = stripNumberedSelectPrefix(opt.label || opt.value);
+    if (name) out.push(name);
+  }
+  return [...new Set(out.filter(Boolean))];
 }
 
 /** Opciones visibles en el asistente de voz (desplegables, IVA, etc.). */

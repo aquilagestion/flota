@@ -13,6 +13,17 @@
         "buildType": "apk"
       }
     },
+    "preview-uso": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_APP_MODE": "uso",
+        "FL_ANDROID_APPLICATION_ID": "com.monteromiguel.app.uso",
+        "FL_ANDROID_APP_LABEL": "RESERVAS-AUTOS"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "android": {
         "buildType": "app-bundle"

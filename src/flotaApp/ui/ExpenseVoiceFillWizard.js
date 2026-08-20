@@ -30,7 +30,9 @@ import {
 import {
   fieldUsesFilterFirstVoiceSelect,
   filterVoiceSelectOptions,
+  resolveFilterFirstVoiceSelect,
   tryPickVoiceSelectOption,
+  voiceSelectContextualStrings,
   wizardSelectOptionsForField,
   VOICE_SELECT_CANDIDATE_CAP,
   VOICE_SELECT_FILTER_MIN_LEN,
@@ -602,24 +604,27 @@ export default function ExpenseVoiceFillWizard({
 
       if (useFilterSelect) {
         const allOptions = cycle.allOptions.length ? cycle.allOptions : wizardSelectOptionsForField(field);
-        const filterQ = cycle.selectFilter || cleaned;
-        const filtered = filterVoiceSelectOptions(allOptions, filterQ);
+        const resolved = resolveFilterFirstVoiceSelect(cleaned, allOptions, field) ||
+          resolveFilterFirstVoiceSelect(raw, allOptions, field);
+        if (resolved?.kind === "pick" && resolved.option) return resolved.option.value;
         if (field?.key === "departamento_o_proyecto") {
           const byFullList = tryNumberedMenuPick_(cleaned) || tryNumberedMenuPick_(raw);
           if (byFullList) return byFullList;
         }
+        const filterQ = cycle.selectFilter || cleaned;
+        const filtered = filterVoiceSelectOptions(allOptions, filterQ);
         const numPick =
-            tryPickVoiceSelectOption(cleaned, filtered, field) ||
-            tryPickVoiceSelectOption(raw, filtered, field) ||
-            tryPickVoiceSelectOption(cleaned, allOptions, field) ||
-            tryPickVoiceSelectOption(raw, allOptions, field);
-          if (numPick) return numPick.value;
-          const byName = filterVoiceSelectOptions(allOptions, cleaned);
-          if (byName.length === 1) return byName[0].value;
-          const parsed = parseVoiceTranscript(field, cleaned);
-          if (parsed) return parsed;
-          return "";
-        }
+          tryPickVoiceSelectOption(cleaned, filtered, field) ||
+          tryPickVoiceSelectOption(raw, filtered, field) ||
+          tryPickVoiceSelectOption(cleaned, allOptions, field) ||
+          tryPickVoiceSelectOption(raw, allOptions, field);
+        if (numPick) return numPick.value;
+        const byName = filterVoiceSelectOptions(allOptions, cleaned);
+        if (byName.length === 1) return byName[0].value;
+        const parsed = parseVoiceTranscript(field, cleaned);
+        if (parsed) return parsed;
+        return "";
+      }
 
         if (useNumberedMenu) {
           const picked = tryNumberedMenuPick_(cleaned) || tryNumberedMenuPick_(raw);
@@ -747,6 +752,9 @@ export default function ExpenseVoiceFillWizard({
         stopListenRef.current = startExpenseVoiceListen({
           continuous: true,
           autoRestart: true,
+          contextualStrings: useFilterSelect
+            ? voiceSelectContextualStrings(field, cycle.allOptions || [])
+            : undefined,
           onResult: ({ transcript: tr, isFinal }) => {
             const t = String(tr || "").trim();
             if (!t || cycle.resolved || runIdRef.current !== runId) return;
@@ -787,7 +795,24 @@ export default function ExpenseVoiceFillWizard({
 
         if (useFilterSelect) {
           const allOptions = cycle.allOptions || [];
-          if (normFilterQuery_(cleaned).length >= VOICE_SELECT_FILTER_MIN_LEN) {
+          const resolved = resolveFilterFirstVoiceSelect(cleaned, allOptions, field);
+          if (resolved?.kind === "pick" && resolved.option) {
+            cycle.pendingValue = resolved.option.value;
+            setDraftValue(resolved.option.value);
+            setSelectFilterText("");
+            cycle.selectFilter = "";
+            setErrorMsg(resolved.message || "");
+          } else if (resolved?.kind === "filter" && resolved.options?.length) {
+            cycle.selectFilter = resolved.heard || cleaned;
+            setSelectFilterText(resolved.heard || cleaned);
+            cycle.pendingValue = "";
+            setDraftValue("");
+            setErrorMsg(resolved.message || "");
+          } else if (resolved?.kind === "miss_number" || resolved?.kind === "miss_name") {
+            cycle.pendingValue = "";
+            setDraftValue("");
+            setErrorMsg(resolved.message || "No entendí. Pruebe «veintiuno» o «dos uno».");
+          } else if (normFilterQuery_(cleaned).length >= VOICE_SELECT_FILTER_MIN_LEN) {
             cycle.selectFilter = cleaned;
             setSelectFilterText(cleaned);
             const filtered = filterVoiceSelectOptions(allOptions, cleaned);

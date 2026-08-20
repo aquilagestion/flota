@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
-import { ROLES, isAdministracion, isGestor, normalizeRole } from "../auth/roles";
+import { ROLES, canManageUsers as roleCanManageUsers, normalizeRole } from "../auth/roles";
 import { sheetsApi } from "../api/sheetsApi";
 import { theme } from "../ui/theme";
 import { TextField } from "../ui/form/Fields";
@@ -30,7 +30,7 @@ function parseUser_(u) {
   return {
     email,
     nombre: String(u?.nombre || "").trim(),
-    rol: normalizeRole(u?.rol || u?.role || ROLES.OPERARIO),
+    rol: normalizeRole(u?.rol || u?.role || ROLES.USUARIO),
     activo: normalizeActive_(u?.activo ?? "SI"),
     telefono: String(u?.telefono || "").trim(),
     fecha_alta: String(u?.fecha_alta || "").trim(),
@@ -39,9 +39,7 @@ function parseUser_(u) {
 
 export default function UsersAdminScreen({ navigation }) {
   const { role, user } = React.useContext(AuthContext);
-  const gestor = isGestor(role);
-  const administracion = isAdministracion(role);
-  const canManageUsers = gestor || administracion;
+  const canManageUsers = roleCanManageUsers(role);
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState("");

@@ -21,10 +21,14 @@ function nowIso_() {
 function normalizeSiNo_(v, def) {
   var s = String(v == null ? "" : v)
     .trim()
-    .toUpperCase();
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
   if (!s) return def ? "SI" : "NO";
-  if (s === "SI" || s === "TRUE" || s === "1") return "SI";
-  return "NO";
+  if (s === "SI" || s === "S" || s === "TRUE" || s === "1" || s === "YES" || s === "Y") return "SI";
+  if (s === "NO" || s === "N" || s === "FALSE" || s === "0") return "NO";
+  // Valores ambiguos: si el default pide SI (p. ej. listados), no descartar filas.
+  return def ? "SI" : "NO";
 }
 
 function numOrNull_(v) {
@@ -49,7 +53,8 @@ function ensureSheetHeaders_(sheetName, headers) {
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
     return sh;
   }
-  sh.getRange(1, current.length + 1, 1, missing.length).setValues([missing]);
+  // getRange(row, col, lastRow, lastCol): añadir columnas al final.
+  sh.getRange(1, current.length + 1, 1, current.length + missing.length).setValues([missing]);
   return sh;
 }
 
@@ -135,7 +140,9 @@ function headersViajesVehiculoPropio_() {
     "usuario_email",
     "usuario_nombre",
     "matricula",
+    "tipo_vehiculo",
     "fecha_viaje",
+    "fecha_cierre",
     "origen",
     "destino",
     "km_inicial",
@@ -143,7 +150,9 @@ function headersViajesVehiculoPropio_() {
     "km_recorridos",
     "id_proyecto",
     "proyecto_nombre",
+    "work_package",
     "accion",
+    "dni",
     "motivo",
     "tarifa_eur_km_aplicada",
     "importe_km",
@@ -153,6 +162,62 @@ function headersViajesVehiculoPropio_() {
     "created_at",
     "updated_at",
   ];
+}
+
+/** PROPIO | ORGANIZACION (flota GREFA). */
+function normalizeTipoVehiculoViaje_(raw) {
+  var v = safeStr_(raw).toUpperCase();
+  if (v === "ORGANIZACION" || v === "FLOTA" || v === "GREFA" || v === "ORG") return "ORGANIZACION";
+  if (v === "PROPIO" || v === "PARTICULAR" || v === "PRIVADO") return "PROPIO";
+  return "";
+}
+
+/** Set de matrículas activas en FLOTA (mayúsculas, sin espacios). */
+function getMatriculasFlotaSet_() {
+  var out = {};
+  var flota = [];
+  try {
+    flota = rowsToObjects_(getSheet(CFG.SHEETS.FLOTA || "FLOTA"));
+  } catch (e) {
+    try {
+      flota = typeof readSheetObjects_ === "function" ? readSheetObjects_("FLOTA") : [];
+    } catch (e2) {
+      flota = [];
+    }
+  }
+  for (var i = 0; i < flota.length; i++) {
+    var row = flota[i] || {};
+    var mat = safeStr_(row.matricula || row.Matricula || row["matrícula"] || "").toUpperCase().replace(/\s+/g, "");
+    if (typeof normalizeMatricula_ === "function" && mat) {
+      try {
+        var n = normalizeMatricula_(mat);
+        if (n) mat = safeStr_(n).toUpperCase().replace(/\s+/g, "");
+      } catch (e3) {
+        // ignore
+      }
+    }
+    if (!mat) continue;
+    var activo = safeStr_(row.activo).toUpperCase();
+    if (activo === "NO" || activo === "FALSE" || activo === "0") continue;
+    out[mat] = true;
+  }
+  return out;
+}
+
+/**
+ * Resuelve tipo_vehiculo.
+ * Si la matrícula está en FLOTA, gana ORGANIZACION aunque el payload diga PROPIO
+ * (evita viajes de flota mal etiquetados).
+ */
+function resolveTipoVehiculoViaje_(payloadTipo, viajeTipo, matricula, flotaSet) {
+  var mat = safeStr_(matricula).toUpperCase().replace(/\s+/g, "");
+  var set = flotaSet || getMatriculasFlotaSet_();
+  if (mat && set[mat]) return "ORGANIZACION";
+  var fromPayload = normalizeTipoVehiculoViaje_(payloadTipo);
+  if (fromPayload) return fromPayload;
+  var fromViaje = normalizeTipoVehiculoViaje_(viajeTipo);
+  if (fromViaje) return fromViaje;
+  return "PROPIO";
 }
 
 function ensureProyectoModuleSheets_() {
@@ -178,6 +243,19 @@ function indexRowById_(rows, idField, idValue) {
 function userEsAdmin_(email) {
   var rol = normalizeRolSegunUsuarios_(normalizeEmail_(email));
   return rol === "ADMINISTRACION" || rol === "GESTOR";
+}
+
+/** Actor autenticado (user_email) y titular del viaje (usuario_email). GESTOR/ADMIN pueden otro titular. */
+function resolveViajeActorTitular_(payload) {
+  payload = payload || {};
+  var actor = normalizeEmail_(payload.user_email || "");
+  if (!looksLikeEmail_(actor)) throw new Error("user_email invalido");
+  var titular = normalizeEmail_(payload.usuario_email || actor);
+  if (!looksLikeEmail_(titular)) throw new Error("usuario_email invalido");
+  if (titular !== actor && !userEsAdmin_(actor)) {
+    throw new Error("No autorizado para operar viajes a nombre de otro usuario");
+  }
+  return { actor: actor, titular: titular };
 }
 
 function userEsAdministracionOnly_(email) {
@@ -280,7 +358,10 @@ function updateRowByHeaders_(sh, rowNum, changes) {
     if (!Object.prototype.hasOwnProperty.call(changes, key)) continue;
     var idx = headers.indexOf(key);
     if (idx < 0) continue;
-    sh.getRange(rowNum, idx + 1).setValue(changes[key]);
+    var raw = changes[key];
+    var toWrite =
+      typeof cellValueForHeaderWrite_ === "function" ? cellValueForHeaderWrite_(key, raw) : raw;
+    sh.getRange(rowNum, idx + 1).setValue(toWrite);
   }
 }
 
@@ -440,12 +521,48 @@ function apiTarifaKmGetVigente(payload) {
   return getTarifaVigente_(fecha);
 }
 
+/** Serializa filas de viaje: fechas siempre dd/MM/yyyy (nunca Date/serial crudo). */
+function serializeViajePropioRow_(r) {
+  var out = {};
+  var keys = Object.keys(r || {});
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === "_row") continue;
+    var v = r[k];
+    if (k === "fecha_viaje" || k.indexOf("fecha_") === 0) {
+      out[k] = normalizeDateDMYCell_(v);
+    } else if (v instanceof Date) {
+      out[k] = formatDateTimeISO_(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function viajeFechaSortKey_(value) {
+  var d = parseFechaFlexible_(value);
+  return d ? d.getTime() : 0;
+}
+
+/** Más reciente primero: fecha inicio, luego fecha cierre. */
+function compareViajesPorFechasDesc_(a, b) {
+  var fa = viajeFechaSortKey_(a.fecha_viaje);
+  var fb = viajeFechaSortKey_(b.fecha_viaje);
+  if (fb !== fa) return fb - fa;
+  var ca = viajeFechaSortKey_(a.fecha_cierre);
+  var cb = viajeFechaSortKey_(b.fecha_cierre);
+  if (cb !== ca) return cb - ca;
+  return String(b.id_viaje || "").localeCompare(String(a.id_viaje || ""));
+}
+
 function apiViajeVehiculoPropioCrear(payload) {
   payload = payload || {};
   ensureProyectoModuleSheets_();
   ensureGastosViajePropioCols_();
-  var actor = normalizeEmail_(payload.user_email || payload.usuario_email || "");
-  if (!looksLikeEmail_(actor)) throw new Error("user_email invalido");
+  var who = resolveViajeActorTitular_(payload);
+  var actor = who.actor;
+  var titular = who.titular;
   var id = genId_("VVP");
   var now = nowIso_();
   var kmInicial = numOrNull_(payload.km_inicial);
@@ -453,12 +570,32 @@ function apiViajeVehiculoPropioCrear(payload) {
   var idProyecto = safeStr_(payload.id_proyecto);
   var proyecto = idProyecto ? getProyectoById_(idProyecto) : null;
   var nombreProyecto = safeStr_(payload.proyecto_nombre || (proyecto ? proyecto.nombre_proyecto : ""));
+  // Siempre dd/MM/yyyy: evita que Sheets interprete "2026" o ISO mal como serial Excel (~1905).
+  var fechaViaje = normalizeDateDMYCell_(payload.fecha_viaje || new Date());
+  if (!fechaViaje || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaViaje)) {
+    throw new Error("fecha_viaje invalida (usa dd/MM/yyyy o yyyy-MM-dd)");
+  }
+  var matriculaNueva = safeStr_(payload.matricula).toUpperCase();
+  var tipoVehiculo = resolveTipoVehiculoViaje_(
+    payload.tipo_vehiculo,
+    "",
+    matriculaNueva,
+    null
+  );
+  var fechaCierreRaw =
+    payload.fecha_cierre != null && String(payload.fecha_cierre).trim() !== ""
+      ? payload.fecha_cierre
+      : payload.fecha_fin != null && String(payload.fecha_fin).trim() !== ""
+        ? payload.fecha_fin
+        : "";
+  var fechaCierre = fechaCierreRaw ? normalizeDateDMYCell_(fechaCierreRaw) : "";
   var row = {
     id_viaje: id,
-    usuario_email: actor,
-    usuario_nombre: safeStr_(payload.usuario_nombre || nombreUsuarioDesdeEmail_(actor)),
-    matricula: safeStr_(payload.matricula).toUpperCase(),
-    fecha_viaje: safeStr_(payload.fecha_viaje || normalizeDateDMYCell_(new Date())),
+    usuario_email: titular,
+    usuario_nombre: safeStr_(payload.usuario_nombre || nombreUsuarioDesdeEmail_(titular)),
+    matricula: matriculaNueva,
+    tipo_vehiculo: tipoVehiculo,
+    fecha_viaje: fechaViaje,
     origen: safeStr_(payload.origen),
     destino: safeStr_(payload.destino),
     km_inicial: kmInicial,
@@ -466,22 +603,28 @@ function apiViajeVehiculoPropioCrear(payload) {
     km_recorridos: "",
     id_proyecto: idProyecto,
     proyecto_nombre: nombreProyecto,
-    accion: safeStr_(payload.accion),
+    work_package: safeStr_(payload.work_package),
+    accion: safeStr_(payload.accion || payload.accion_proyecto),
+    dni: safeStr_(payload.dni).toUpperCase(),
     motivo: safeStr_(payload.motivo),
+    fecha_cierre: fechaCierre,
     tarifa_eur_km_aplicada: "",
     importe_km: 0,
     importe_gastos: 0,
     importe_total: 0,
-    estado: "EN_CURSO",
+    estado: "ABIERTO",
     created_at: now,
     updated_at: now,
+    excel_import: safeStr_(payload.excel_import).toUpperCase() === "SI" ? "SI" : "",
+    excel_source_file_id: safeStr_(payload.excel_source_file_id),
   };
   if (!row.fecha_viaje) throw new Error("fecha_viaje obligatoria");
   if (!row.origen) throw new Error("origen obligatorio");
   if (!row.destino) throw new Error("destino obligatorio");
   if (!row.id_proyecto) throw new Error("id_proyecto obligatorio");
+  // work_package / accion / dni: opcionales en el viaje; obligatorios al confeccionar la hoja de gastos.
   appendRowByHeaders_(getSheet("VIAJES_VEHICULO_PROPIO"), row);
-  return { id_viaje: id, estado: row.estado };
+  return { id_viaje: id, estado: row.estado, fecha_viaje: row.fecha_viaje };
 }
 
 function apiViajeVehiculoPropioActualizar(payload) {
@@ -495,22 +638,135 @@ function apiViajeVehiculoPropioActualizar(payload) {
   if (!viaje) throw new Error("Viaje no encontrado");
   var owner = normalizeEmail_(viaje.usuario_email);
   if (actor !== owner && !userEsAdmin_(actor)) throw new Error("No autorizado");
-  if (safeStr_(viaje.estado).toUpperCase() === "CERRADO") throw new Error("Viaje CERRADO bloqueado");
+  var estado = safeStr_(viaje.estado).toUpperCase();
+
+  // Viaje cerrado: se pueden editar todos los datos del viaje (sigue CERRADO).
+  if (estado === "CERRADO") {
+    var updatesClosed = { updated_at: nowIso_() };
+    var idProyectoC = safeStr_(
+      payload.id_proyecto != null ? payload.id_proyecto : viaje.id_proyecto
+    );
+    var proyectoC = idProyectoC ? getProyectoById_(idProyectoC) : null;
+    var fechaViajeRawC =
+      payload.fecha_viaje != null ? payload.fecha_viaje : viaje.fecha_viaje;
+    var fechaViajeC = normalizeDateDMYCell_(fechaViajeRawC);
+    if (!fechaViajeC || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaViajeC)) {
+      throw new Error("fecha_viaje invalida (usa dd/MM/yyyy o yyyy-MM-dd)");
+    }
+    updatesClosed.matricula = safeStr_(
+      payload.matricula != null ? payload.matricula : viaje.matricula
+    ).toUpperCase();
+    updatesClosed.tipo_vehiculo = resolveTipoVehiculoViaje_(
+      payload.tipo_vehiculo,
+      viaje.tipo_vehiculo,
+      updatesClosed.matricula,
+      null
+    );
+    updatesClosed.fecha_viaje = fechaViajeC;
+    updatesClosed.origen = safeStr_(payload.origen != null ? payload.origen : viaje.origen);
+    updatesClosed.destino = safeStr_(payload.destino != null ? payload.destino : viaje.destino);
+    updatesClosed.id_proyecto = idProyectoC;
+    updatesClosed.proyecto_nombre = safeStr_(
+      payload.proyecto_nombre ||
+        (proyectoC ? proyectoC.nombre_proyecto : viaje.proyecto_nombre)
+    );
+    updatesClosed.work_package = safeStr_(
+      payload.work_package != null ? payload.work_package : viaje.work_package
+    );
+    updatesClosed.accion = safeStr_(
+      payload.accion != null
+        ? payload.accion
+        : payload.accion_proyecto != null
+          ? payload.accion_proyecto
+          : viaje.accion
+    );
+    updatesClosed.dni = safeStr_(payload.dni != null ? payload.dni : viaje.dni).toUpperCase();
+    updatesClosed.motivo = safeStr_(payload.motivo != null ? payload.motivo : viaje.motivo);
+
+    var kmIniC = numOrNull_(
+      payload.km_inicial != null && String(payload.km_inicial) !== ""
+        ? payload.km_inicial
+        : viaje.km_inicial
+    );
+    if (kmIniC == null || kmIniC < 0) throw new Error("km_inicial invalido");
+    updatesClosed.km_inicial = kmIniC;
+
+    var kmFinC = numOrNull_(
+      payload.km_final != null && String(payload.km_final) !== ""
+        ? payload.km_final
+        : viaje.km_final
+    );
+    if (kmFinC == null || kmFinC < 0) throw new Error("km_final invalido");
+    if (kmFinC < kmIniC) throw new Error("km_final no puede ser menor que km_inicial");
+    updatesClosed.km_final = kmFinC;
+    updatesClosed.km_recorridos = kmFinC - kmIniC;
+
+    var fechaCierreRawC =
+      payload.fecha_cierre != null && String(payload.fecha_cierre).trim() !== ""
+        ? payload.fecha_cierre
+        : viaje.fecha_cierre;
+    var fechaCierreUpd = normalizeDateDMYCell_(fechaCierreRawC);
+    if (!fechaCierreUpd || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaCierreUpd)) {
+      throw new Error("fecha_cierre invalida (usa dd/MM/yyyy)");
+    }
+    updatesClosed.fecha_cierre = fechaCierreUpd;
+
+    var importeGastosC = getSumaGastosViajePropio_(id);
+    updatesClosed.importe_gastos = importeGastosC;
+    updatesClosed.importe_km = numOrNull_(viaje.importe_km) != null ? numOrNull_(viaje.importe_km) : 0;
+    updatesClosed.importe_total = Number(
+      ((updatesClosed.importe_km || 0) + importeGastosC).toFixed(2)
+    );
+    updateRowByHeaders_(sh, viaje._row, updatesClosed);
+    return {
+      id_viaje: id,
+      estado: "CERRADO",
+      fecha_viaje: updatesClosed.fecha_viaje,
+      km_inicial: updatesClosed.km_inicial,
+      km_final: updatesClosed.km_final,
+      km_recorridos: updatesClosed.km_recorridos,
+      fecha_cierre: updatesClosed.fecha_cierre,
+      importe_gastos: updatesClosed.importe_gastos,
+      importe_total: updatesClosed.importe_total,
+    };
+  }
+
   var idProyecto = safeStr_(payload.id_proyecto || viaje.id_proyecto);
   var proyecto = idProyecto ? getProyectoById_(idProyecto) : null;
+  var fechaViajeRaw = payload.fecha_viaje != null ? payload.fecha_viaje : viaje.fecha_viaje;
+  var fechaViaje = normalizeDateDMYCell_(fechaViajeRaw);
+  if (!fechaViaje || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaViaje)) {
+    throw new Error("fecha_viaje invalida (usa dd/MM/yyyy o yyyy-MM-dd)");
+  }
   var updates = {
     matricula: safeStr_(payload.matricula != null ? payload.matricula : viaje.matricula).toUpperCase(),
-    fecha_viaje: safeStr_(payload.fecha_viaje != null ? payload.fecha_viaje : viaje.fecha_viaje),
+    tipo_vehiculo: resolveTipoVehiculoViaje_(
+      payload.tipo_vehiculo,
+      viaje.tipo_vehiculo,
+      payload.matricula != null ? payload.matricula : viaje.matricula,
+      null
+    ),
+    fecha_viaje: fechaViaje,
     origen: safeStr_(payload.origen != null ? payload.origen : viaje.origen),
     destino: safeStr_(payload.destino != null ? payload.destino : viaje.destino),
     id_proyecto: idProyecto,
     proyecto_nombre: safeStr_(payload.proyecto_nombre || (proyecto ? proyecto.nombre_proyecto : viaje.proyecto_nombre)),
-    accion: safeStr_(payload.accion != null ? payload.accion : viaje.accion),
+    work_package: safeStr_(
+      payload.work_package != null ? payload.work_package : viaje.work_package
+    ),
+    accion: safeStr_(
+      payload.accion != null
+        ? payload.accion
+        : payload.accion_proyecto != null
+          ? payload.accion_proyecto
+          : viaje.accion
+    ),
+    dni: safeStr_(payload.dni != null ? payload.dni : viaje.dni).toUpperCase(),
     motivo: safeStr_(payload.motivo != null ? payload.motivo : viaje.motivo),
     updated_at: nowIso_(),
   };
   updateRowByHeaders_(sh, viaje._row, updates);
-  return { id_viaje: id, estado: safeStr_(viaje.estado).toUpperCase() };
+  return { id_viaje: id, estado: safeStr_(viaje.estado).toUpperCase(), fecha_viaje: fechaViaje };
 }
 
 function getSumaGastosViajePropio_(idViaje) {
@@ -540,21 +796,81 @@ function apiViajeVehiculoPropioCerrar(payload) {
   if (actor !== owner && !userEsAdmin_(actor)) throw new Error("No autorizado");
   var estado = safeStr_(viaje.estado).toUpperCase();
   if (estado === "CERRADO") throw new Error("Viaje ya cerrado");
-  var kmIni = numOrNull_(viaje.km_inicial);
+
+  // Al cerrar se pueden revisar/corregir todos los datos del viaje.
+  var idProyecto = safeStr_(
+    payload.id_proyecto != null && String(payload.id_proyecto).trim() !== ""
+      ? payload.id_proyecto
+      : viaje.id_proyecto
+  );
+  var proyecto = idProyecto ? getProyectoById_(idProyecto) : null;
+  var fechaViajeRaw =
+    payload.fecha_viaje != null && String(payload.fecha_viaje).trim() !== ""
+      ? payload.fecha_viaje
+      : viaje.fecha_viaje;
+  var fechaViaje = normalizeDateDMYCell_(fechaViajeRaw);
+  if (!fechaViaje || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaViaje)) {
+    throw new Error("fecha_viaje invalida (usa dd/MM/yyyy o yyyy-MM-dd)");
+  }
+
+  var kmIni = numOrNull_(
+    payload.km_inicial != null && String(payload.km_inicial) !== ""
+      ? payload.km_inicial
+      : viaje.km_inicial
+  );
   var kmFin = numOrNull_(payload.km_final);
   if (kmIni == null || kmIni < 0) throw new Error("km_inicial invalido");
   if (kmFin == null || kmFin < 0) throw new Error("km_final invalido");
   if (kmFin < kmIni) throw new Error("km_final no puede ser menor que km_inicial");
+
+  // fecha_cierre = Fecha Fin en la hoja de gasto.
+  var fechaCierre = normalizeDateDMYCell_(payload.fecha_cierre || new Date());
+  if (!fechaCierre || !/^\d{2}\/\d{2}\/\d{4}$/.test(fechaCierre)) {
+    throw new Error("fecha_cierre invalida (usa dd/MM/yyyy)");
+  }
   var kms = kmFin - kmIni;
-  var tarifaObj = getTarifaVigente_(viaje.fecha_viaje);
-  var tarifa = numOrNull_(tarifaObj.eur_km) || 0;
-  var importeKm = Number((kms * tarifa).toFixed(2));
+  // TARIFA_KM solo aplica a gastos KILOMETRAJE_COLABORADOR, no al cierre de viaje propio.
+  var importeKm = 0;
   var importeGastos = getSumaGastosViajePropio_(id);
   var total = Number((importeKm + importeGastos).toFixed(2));
+  var matriculaCierre = safeStr_(
+    payload.matricula != null && String(payload.matricula).trim() !== ""
+      ? payload.matricula
+      : viaje.matricula
+  ).toUpperCase();
   updateRowByHeaders_(sh, viaje._row, {
+    matricula: matriculaCierre,
+    tipo_vehiculo: resolveTipoVehiculoViaje_(
+      payload.tipo_vehiculo,
+      viaje.tipo_vehiculo,
+      matriculaCierre,
+      null
+    ),
+    fecha_viaje: fechaViaje,
+    origen: safeStr_(payload.origen != null ? payload.origen : viaje.origen),
+    destino: safeStr_(payload.destino != null ? payload.destino : viaje.destino),
+    km_inicial: kmIni,
     km_final: kmFin,
     km_recorridos: kms,
-    tarifa_eur_km_aplicada: tarifa,
+    fecha_cierre: fechaCierre,
+    id_proyecto: idProyecto,
+    proyecto_nombre: safeStr_(
+      payload.proyecto_nombre ||
+        (proyecto ? proyecto.nombre_proyecto : viaje.proyecto_nombre)
+    ),
+    work_package: safeStr_(
+      payload.work_package != null ? payload.work_package : viaje.work_package
+    ),
+    accion: safeStr_(
+      payload.accion != null
+        ? payload.accion
+        : payload.accion_proyecto != null
+          ? payload.accion_proyecto
+          : viaje.accion
+    ),
+    dni: safeStr_(payload.dni != null ? payload.dni : viaje.dni).toUpperCase(),
+    motivo: safeStr_(payload.motivo != null ? payload.motivo : viaje.motivo),
+    tarifa_eur_km_aplicada: "",
     importe_km: importeKm,
     importe_gastos: importeGastos,
     importe_total: total,
@@ -564,12 +880,80 @@ function apiViajeVehiculoPropioCerrar(payload) {
   return {
     id_viaje: id,
     estado: "CERRADO",
+    fecha_viaje: fechaViaje,
+    km_inicial: kmIni,
+    km_final: kmFin,
     km_recorridos: kms,
-    tarifa_eur_km_aplicada: tarifa,
+    fecha_cierre: fechaCierre,
+    tarifa_eur_km_aplicada: "",
     importe_km: importeKm,
     importe_gastos: importeGastos,
     importe_total: total,
   };
+}
+
+/** Reabre un viaje CERRADO para poder añadir más gastos y volver a cerrarlo. */
+function apiViajeVehiculoPropioReabrir(payload) {
+  payload = payload || {};
+  ensureProyectoModuleSheets_();
+  ensureGastosViajePropioCols_();
+  var id = safeStr_(payload.id_viaje);
+  if (!id) throw new Error("Falta id_viaje");
+  var actor = normalizeEmail_(payload.user_email || payload.usuario_email || "");
+  var sh = getSheet("VIAJES_VEHICULO_PROPIO");
+  var viaje = indexRowById_(rowsToObjects_(sh), "id_viaje", id);
+  if (!viaje) throw new Error("Viaje no encontrado");
+  var owner = normalizeEmail_(viaje.usuario_email);
+  if (actor !== owner && !userEsAdmin_(actor)) throw new Error("No autorizado");
+  var estado = safeStr_(viaje.estado).toUpperCase();
+  if (estado !== "CERRADO") throw new Error("Solo se pueden reabrir viajes CERRADOS");
+  var importeGastos = getSumaGastosViajePropio_(id);
+  updateRowByHeaders_(sh, viaje._row, {
+    estado: "ABIERTO",
+    km_final: "",
+    km_recorridos: "",
+    fecha_cierre: "",
+    importe_km: 0,
+    importe_gastos: importeGastos,
+    importe_total: importeGastos,
+    updated_at: nowIso_(),
+  });
+  return {
+    id_viaje: id,
+    estado: "ABIERTO",
+    importe_gastos: importeGastos,
+    importe_total: importeGastos,
+  };
+}
+
+/** Elimina un viaje solo si no tiene gastos asignados (id_viaje_propio). */
+function apiViajeVehiculoPropioEliminar(payload) {
+  payload = payload || {};
+  ensureProyectoModuleSheets_();
+  ensureGastosViajePropioCols_();
+  var id = safeStr_(payload.id_viaje);
+  if (!id) throw new Error("Falta id_viaje");
+  var actor = normalizeEmail_(payload.user_email || payload.usuario_email || "");
+  var sh = getSheet("VIAJES_VEHICULO_PROPIO");
+  var viaje = indexRowById_(rowsToObjects_(sh), "id_viaje", id);
+  if (!viaje) throw new Error("Viaje no encontrado");
+  var owner = normalizeEmail_(viaje.usuario_email);
+  var rol = normalizeRolSegunUsuarios_(actor);
+  if (!(rol === "GESTOR" || rol === "ADMINISTRACION" || owner === actor)) {
+    throw new Error("No autorizado");
+  }
+  var gastos = rowsToObjects_(getSheet("GASTOS")).filter(function (g) {
+    return safeStr_(g.id_viaje_propio) === id;
+  });
+  if (gastos.length) {
+    throw new Error(
+      "No se puede eliminar: el viaje tiene " +
+        gastos.length +
+        " gasto(s) asignado(s). Primero desasigna o elimina esos gastos."
+    );
+  }
+  sh.deleteRow(viaje._row);
+  return { id_viaje: id, eliminado: true };
 }
 
 function apiViajeVehiculoPropioList(payload) {
@@ -577,13 +961,27 @@ function apiViajeVehiculoPropioList(payload) {
   ensureProyectoModuleSheets_();
   var actor = normalizeEmail_(payload.user_email || "");
   var rol = normalizeRolSegunUsuarios_(actor);
+  var titularFilter = normalizeEmail_(payload.usuario_email || payload.titular_email || "");
   var estadoFilter = safeStr_(payload.estado).toUpperCase();
-  return rowsToObjects_(getSheet("VIAJES_VEHICULO_PROPIO")).filter(function (r) {
-    var est = safeStr_(r.estado).toUpperCase();
-    if (estadoFilter && est !== estadoFilter) return false;
-    if (rol === "GESTOR" || rol === "ADMINISTRACION") return true;
-    return normalizeEmail_(r.usuario_email) === actor;
-  });
+  return rowsToObjects_(getSheet("VIAJES_VEHICULO_PROPIO"))
+    .filter(function (r) {
+      var est = safeStr_(r.estado).toUpperCase();
+      if (estadoFilter && est !== estadoFilter) return false;
+      if (titularFilter) {
+        if (rol === "GESTOR" || rol === "ADMINISTRACION") {
+          // Filtrar por otro titular; si coincide con el actor, mostrar todos.
+          if (titularFilter !== actor) {
+            return normalizeEmail_(r.usuario_email) === titularFilter;
+          }
+        } else {
+          return normalizeEmail_(r.usuario_email) === actor;
+        }
+      }
+      if (rol === "GESTOR" || rol === "ADMINISTRACION") return true;
+      return normalizeEmail_(r.usuario_email) === actor;
+    })
+    .map(serializeViajePropioRow_)
+    .sort(compareViajesPorFechasDesc_);
 }
 
 function apiViajeVehiculoPropioDetalle(payload) {
@@ -599,7 +997,7 @@ function apiViajeVehiculoPropioDetalle(payload) {
   var gastos = rowsToObjects_(getSheet("GASTOS")).filter(function (g) {
     return safeStr_(g.id_viaje_propio) === safeStr_(viaje.id_viaje);
   });
-  return { viaje: viaje, gastos: gastos };
+  return { viaje: serializeViajePropioRow_(viaje), gastos: gastos };
 }
 
 function apiServicioColaboradorCrear(payload) {

@@ -4,6 +4,8 @@ import { AuthContext } from "../auth/AuthContext";
 import { sheetsApi } from "../api/sheetsApi";
 import { localDb } from "../storage/localDb";
 import { isAdministracion, isGestor } from "../auth/roles";
+import { loadProjectSelectOptions } from "../../flotaWeb/lib/proyectoResolve";
+import { normalizeDateToDmy } from "../../flotaWeb/lib/format";
 import { theme } from "../ui/theme";
 import { SelectField } from "../ui/form/Fields";
 
@@ -29,31 +31,6 @@ const INITIAL_FORM = {
 };
 
 const OTRO_DEPARTAMENTO = "__OTRO__";
-
-function mapProjectOptions_(rows) {
-  const list = Array.isArray(rows) ? rows : [];
-  const out = [];
-  for (const r of list) {
-    const entries = Object.entries(r || {});
-    const values = entries.map(([, v]) => String(v || "").trim());
-    const colB = values.length >= 2 ? values[1] : "";
-    const value = String(r?.id_proyecto || r?.id || (values.length ? values[0] : "")).trim();
-    const label = String(r?.nombre_proyecto || r?.nombre || r?.proyecto || colB).trim();
-    if (!value || !label) continue;
-    if (!out.find((x) => x.value === value)) out.push({ value, label });
-  }
-  return out;
-}
-
-async function loadProjectRows_(email) {
-  try {
-    const res = await sheetsApi.get("proyecto_list_columna_b", { solo_activos: "SI", user_email: email || "" });
-    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-  } catch {
-    const res = await sheetsApi.get("proyecto_list", { solo_activos: "SI", user_email: email || "" });
-    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-  }
-}
 
 function Header({ title, onBack }) {
   return (
@@ -81,9 +58,17 @@ export default function VehicleCreateScreen({ navigation }) {
     let cancelled = false;
     (async () => {
       try {
-        const rows = await loadProjectRows_(user?.email || "");
+        const opts = await loadProjectSelectOptions(
+          (action, params) => sheetsApi.get(action, params, { timeoutMs: 45000 }),
+          user?.email || "",
+          {
+            readCache: (e) => localDb.getProjectSelectOptions(e),
+            writeCache: (e, list) => localDb.setProjectSelectOptions(e, list),
+          }
+        );
         if (cancelled) return;
-        setProjectOptions(mapProjectOptions_(rows));
+        // Desplegable = columna B (nombre), no id.
+        setProjectOptions(opts.map((o) => ({ value: o.label, label: o.label })));
       } catch {
         if (!cancelled) setProjectOptions([]);
       }
@@ -108,18 +93,18 @@ export default function VehicleCreateScreen({ navigation }) {
         : String(form.departamento_o_proyecto || "").trim();
     const payload = {
       matricula: String(form.matricula || "").trim().toUpperCase(),
-      fecha_matriculacion: String(form.fecha_matriculacion || "").trim(),
+      fecha_matriculacion: normalizeDateToDmy(form.fecha_matriculacion) || "",
       marca: String(form.marca || "").trim(),
       modelo: String(form.modelo || "").trim(),
       combustible: String(form.combustible || "").trim(),
       propiedad: String(form.propiedad || "").trim(),
       departamento_o_proyecto,
       responsable: String(form.responsable || "").trim(),
-      itv_desde: String(form.itv_desde || "").trim(),
-      itv_hasta: String(form.itv_hasta || "").trim(),
+      itv_desde: normalizeDateToDmy(form.itv_desde) || "",
+      itv_hasta: normalizeDateToDmy(form.itv_hasta) || "",
       aseguradora: String(form.aseguradora || "").trim(),
-      seguro_desde: String(form.seguro_desde || "").trim(),
-      seguro_hasta: String(form.seguro_hasta || "").trim(),
+      seguro_desde: normalizeDateToDmy(form.seguro_desde) || "",
+      seguro_hasta: normalizeDateToDmy(form.seguro_hasta) || "",
       poliza: String(form.poliza || "").trim(),
       "e-mail_de_notificaciones": String(form.email_de_notificaciones || "").trim(),
       activo: String(form.activo || "SI").trim().toUpperCase() === "NO" ? "NO" : "SI",
@@ -224,7 +209,7 @@ export default function VehicleCreateScreen({ navigation }) {
         <TextInput style={styles.input} placeholderTextColor={theme.colors.placeholder} value={form.poliza} onChangeText={(v) => setForm((p) => ({ ...p, poliza: v }))} />
 
         <Text style={styles.label}>E-MAIL DE NOTIFICACIONES</Text>
-        <TextInput style={styles.input} autoCapitalize="none" keyboardType="email-address" placeholderTextColor={theme.colors.placeholder} value={form.email_de_notificaciones} onChangeText={(v) => setForm((p) => ({ ...p, email_de_notificaciones: v }))} />
+        <TextInput style={styles.input} autoCapitalize="none" keyboardType="email-address" placeholder="Varios correos separados por ; o ," placeholderTextColor={theme.colors.placeholder} value={form.email_de_notificaciones} onChangeText={(v) => setForm((p) => ({ ...p, email_de_notificaciones: v }))} />
 
         <Text style={styles.label}>ACTIVO (SI/NO)</Text>
         <TextInput style={styles.input} placeholder="SI" placeholderTextColor={theme.colors.placeholder} value={form.activo} onChangeText={(v) => setForm((p) => ({ ...p, activo: v }))} />

@@ -4,7 +4,9 @@ import { theme } from "./theme";
 import {
   fieldUsesFilterFirstVoiceSelect,
   filterVoiceSelectOptions,
+  resolveFilterFirstVoiceSelect,
   tryPickVoiceSelectOption,
+  voiceSelectContextualStrings,
   voiceSelectOptionsForField,
   VOICE_SELECT_CANDIDATE_CAP,
   VOICE_SELECT_FILTER_MIN_LEN,
@@ -137,11 +139,9 @@ export default function ExpenseFieldVoiceModal({ visible, field, onClose, onAppl
         if (fromList) return fromList;
       }
       if (useFilterSelect) {
+        const resolved = resolveFilterFirstVoiceSelect(txt, allOptions, field);
+        if (resolved?.kind === "pick" && resolved.option) return resolved.option.value;
         const list = filterVoiceSelectOptions(allOptions, filterText);
-        if (field?.key === "departamento_o_proyecto") {
-          const byFull = tryQuickNumberedMenuPick(field, txt);
-          if (byFull) return byFull;
-        }
         const pick = tryPickVoiceSelectOption(txt, list, field);
         if (pick) return pick.value;
       }
@@ -191,6 +191,7 @@ export default function ExpenseFieldVoiceModal({ visible, field, onClose, onAppl
       stopListenRef.current = startExpenseVoiceListen({
         continuous: true,
         autoRestart: true,
+        contextualStrings: useFilterSelect ? voiceSelectContextualStrings(field, allOptions) : undefined,
         onResult: ({ transcript: tr, isFinal }) => {
           const t = String(tr || "").trim();
           if (!t || resolveCycle_()) return;
@@ -273,7 +274,22 @@ export default function ExpenseFieldVoiceModal({ visible, field, onClose, onAppl
       setTranscript(cleaned);
 
       if (isSelect && useFilterSelect) {
-        if (cleaned.length >= VOICE_SELECT_FILTER_MIN_LEN) {
+        const resolved = resolveFilterFirstVoiceSelect(cleaned, allOptions, field);
+        if (resolved?.kind === "pick" && resolved.option) {
+          cycle.pendingValue = resolved.option.value;
+          setConfirmOption(resolved.option);
+          setFilterText("");
+          setErrorMsg(resolved.message || "");
+        } else if (resolved?.kind === "filter" && resolved.options?.length) {
+          setFilterText(resolved.heard || cleaned);
+          cycle.pendingValue = "";
+          setConfirmOption(null);
+          setErrorMsg(resolved.message || "");
+        } else if (resolved?.kind === "miss_number" || resolved?.kind === "miss_name") {
+          cycle.pendingValue = "";
+          setConfirmOption(null);
+          setErrorMsg(resolved.message || "No entendí. Pruebe «veintiuno» o «dos uno».");
+        } else if (cleaned.length >= VOICE_SELECT_FILTER_MIN_LEN) {
           setFilterText(cleaned);
           const filtered = filterVoiceSelectOptions(allOptions, cleaned);
           if (filtered.length === 1) {

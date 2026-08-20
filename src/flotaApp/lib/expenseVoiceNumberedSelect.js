@@ -2,9 +2,10 @@ import { stripNumberedSelectPrefix } from "../../flotaWeb/lib/numberedSelectOpti
 
 /** Menú numerado de IVA por voz (todas las tipologías de gasto). */
 export const IVA_VOICE_MENU = [
-  { value: "0", label: "IVA cero" },
+  { value: "4", label: "IVA cuatro" },
   { value: "10", label: "IVA diez" },
   { value: "21", label: "IVA veintiuno" },
+  { value: "0", label: "IVA cero" },
   { value: "__OTRO__", label: "otro IVA" },
 ];
 
@@ -82,6 +83,9 @@ function optionLabelForVoice_(o) {
 function optionValueForVoice_(o) {
   if (o && typeof o === "object" && !Array.isArray(o)) {
     const value = String(o.value ?? "").trim();
+    const label = stripNumberedSelectPrefix(String(o.label || "").trim());
+    // Ids tipo PRO-000009: devolver nombre visible (columna B) si hay label distinto.
+    if (/^PRO[-_]?\d+/i.test(value) && label) return label;
     return value;
   }
   const s = String(o || "").trim();

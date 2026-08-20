@@ -2,32 +2,47 @@ function parseDateTimeFlexible_(value) {
   const s = String(value || "").trim();
   if (!s) return null;
 
-  // Intento directo (ISO y variantes)
-  let d = new Date(s);
-  if (!isNaN(d.getTime())) return d;
-
-  // dd/MM/yyyyTHH:mm:ss
+  // Preferir dd/MM/yyyy (canónico) antes que new Date() ambiguo.
   let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})T(\d{2}):(\d{2}):(\d{2})$/);
   if (m) {
-    d = new Date(
-      `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}T${m[4]}:${m[5]}:${m[6]}`
+    var d1 = new Date(
+      Number(m[3]),
+      Number(m[2]) - 1,
+      Number(m[1]),
+      Number(m[4]),
+      Number(m[5]),
+      Number(m[6])
     );
-    if (!isNaN(d.getTime())) return d;
+    if (!isNaN(d1.getTime())) return d1;
   }
 
-  // dd/MM/yyyy HH:mm:ss
   m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
   if (m) {
-    d = new Date(
-      `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}T${m[4]}:${m[5]}:${m[6]}`
+    var d2 = new Date(
+      Number(m[3]),
+      Number(m[2]) - 1,
+      Number(m[1]),
+      Number(m[4]),
+      Number(m[5]),
+      Number(m[6])
     );
-    if (!isNaN(d.getTime())) return d;
+    if (!isNaN(d2.getTime())) return d2;
   }
+
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    var d3 = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12, 0, 0, 0);
+    if (!isNaN(d3.getTime())) return d3;
+  }
+
+  // ISO y variantes
+  var d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
 
   return null;
 }
 
-function apiLiberacionCrear(payload) {
+function apiLiberacionPeriodoCrear(payload) {
   payload = payload || {};
   const required = ["matricula", "desde_ts", "hasta_ts", "motivo", "responsable_email"];
   for (var i = 0; i < required.length; i++) {

@@ -1,5 +1,59 @@
+import { env } from "../../flotaApp/config/env";
 import { extractDriveFileId } from "./format";
 import { responseDataObject } from "./api";
+
+/** Caché en memoria por file_id (sesión) para no re-pedir ticket_drive_data. */
+const ticketDriveDataCache_ = new Map();
+const TICKET_CACHE_MAX = 80;
+const TICKET_HYDRATE_CONCURRENCY = 6;
+/** Base64 de imagen/PDF vía Apps Script puede superar el timeout GET por defecto (15s). */
+const TICKET_DRIVE_DATA_TIMEOUT_MS = 45000;
+
+function callTicketDriveDataApi_(apiGet, params) {
+  if (typeof apiGet !== "function") {
+    return Promise.reject(new Error("apiGet no disponible"));
+  }
+  // Preferir firma (action, params, options); si el wrapper solo acepta 2 args, igual funciona.
+  try {
+    return apiGet("ticket_drive_data", params, { timeoutMs: TICKET_DRIVE_DATA_TIMEOUT_MS });
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+function cacheGetTicket_(fileId) {
+  const id = String(fileId || "").trim();
+  if (!id) return null;
+  return ticketDriveDataCache_.get(id) || null;
+}
+
+function cacheSetTicket_(fileId, entry) {
+  const id = String(fileId || "").trim();
+  if (!id || !entry) return;
+  if (ticketDriveDataCache_.size >= TICKET_CACHE_MAX) {
+    const first = ticketDriveDataCache_.keys().next().value;
+    if (first) ticketDriveDataCache_.delete(first);
+  }
+  ticketDriveDataCache_.set(id, entry);
+}
+
+/** Ejecuta trabajos con concurrencia limitada. */
+export async function mapPool_(items, concurrency, mapper) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return [];
+  const limit = Math.max(1, Math.min(Number(concurrency) || 1, list.length));
+  const out = new Array(list.length);
+  let next = 0;
+  async function worker() {
+    while (next < list.length) {
+      const i = next;
+      next += 1;
+      out[i] = await mapper(list[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return out;
+}
 
 /** URLs de ticket/factura unificadas desde un registro de gasto. */
 export function ticketUrlsFromExpenseRecord(raw) {
@@ -50,8 +104,10 @@ export function ticketFetchUrlForEmbed(url) {
 export function isPdfOrImageTicketUrl(url) {
   const u = String(url || "").trim().toLowerCase();
   if (!u) return false;
-  if (u.startsWith("file:") || u.startsWith("content:")) return true;
-  return /\.(pdf|jpg|jpeg|png|webp|gif)(\?|$)/i.test(u) || u.includes("drive.google") || u.includes("googleusercontent");
+  if (u.startsWith("file:") || u.startsWith("content:") || u.startsWith("data:")) return true;
+  // Cualquier URL/id de Drive (aunque no lleve extensión .jpg/.pdf)
+  if (extractDriveFileId(u) || u.includes("drive.google") || u.includes("googleusercontent")) return true;
+  return /\.(pdf|jpg|jpeg|png|webp|gif)(\?|$)/i.test(u);
 }
 
 /** URL remota (Drive/HTTP) frente a URI local o data URI. */
@@ -89,19 +145,54 @@ export function mapServerTicketAttachments_(rows) {
         String(t?.dataUri || t?.data_uri || "").trim() ||
         (b64 ? `data:${mime};base64,${b64}` : "");
       const fileId = String(t?.file_id || extractDriveFileId(t?.url || "") || "").trim();
+      const url = String(t?.url || "").trim();
+      const inferredPdf =
+        mime.includes("pdf") ||
+        /\.pdf(\?|$)/i.test(url) ||
+        String(dataUri).startsWith("data:application/pdf");
       return {
         label: String(t?.label || t?.file_name || `Ticket ${idx + 1}`).trim(),
         dataUri,
-        url: String(t?.url || "").trim(),
+        url,
         file_id: fileId,
-        mime,
+        mime: inferredPdf ? "application/pdf" : mime,
       };
     })
     .filter((t) => t.dataUri || t.file_id || t.url);
 }
 
+async function fetchTicketDriveDataUri_(fileId, apiGet, userEmail) {
+  const id = String(fileId || "").trim();
+  if (!id) return null;
+  const cached = cacheGetTicket_(id);
+  if (cached?.dataUri) return cached;
+  // Apps Script exige secret en GET ticket_drive_data; sin él → UNAUTHORIZED (y en web no hay fallback CORS a Drive).
+  const secret = String(env.apiSecret || "").trim();
+  if (!secret) {
+    if (typeof __DEV__ !== "undefined" && __DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn("[ticket_drive_data] Falta EXPO_PUBLIC_API_SECRET; no se puede hidratar el ticket en web.");
+    }
+    return null;
+  }
+  const res = await callTicketDriveDataApi_(apiGet, {
+    file_id: id,
+    user_email: String(userEmail || "").trim().toLowerCase(),
+    secret,
+  });
+  const data = responseDataObject(res);
+  const b64 = String(data?.base64 || "").trim();
+  const mime = String(data?.mimeType || data?.mime_type || "image/jpeg").trim() || "image/jpeg";
+  if (!b64) return null;
+  const okMime = mime.startsWith("image/") || mime === "application/pdf" || mime.includes("pdf");
+  if (!okMime) return null;
+  const entry = { dataUri: `data:${mime};base64,${b64}`, mime, file_id: id };
+  cacheSetTicket_(id, entry);
+  return entry;
+}
+
 /** Descarga base64 de cada ticket vía API (evita CORS de Drive en el navegador). */
-export async function hydrateTicketAttachmentsViaApi_(attachments, { apiGet, userEmail } = {}) {
+export async function hydrateTicketAttachmentsViaApi_(attachments, { apiGet, userEmail, concurrency } = {}) {
   const email = String(userEmail || "").trim().toLowerCase();
   if (typeof apiGet !== "function" || !email) {
     return (Array.isArray(attachments) ? attachments : []).filter((t) =>
@@ -109,31 +200,40 @@ export async function hydrateTicketAttachmentsViaApi_(attachments, { apiGet, use
     );
   }
   const mapped = mapServerTicketAttachments_(attachments);
-  const out = [];
-  for (const att of mapped) {
+  const limit = Math.max(1, Number(concurrency) || TICKET_HYDRATE_CONCURRENCY);
+  const results = await mapPool_(mapped, limit, async (att) => {
     if (String(att?.dataUri || "").startsWith("data:")) {
-      out.push(att);
-      continue;
+      const fileId = String(att?.file_id || extractDriveFileId(att?.url || "") || "").trim();
+      if (fileId) {
+        cacheSetTicket_(fileId, {
+          dataUri: att.dataUri,
+          mime: att.mime || "image/jpeg",
+          file_id: fileId,
+        });
+      }
+      return att;
     }
     const fileId = String(att?.file_id || extractDriveFileId(att?.url || "") || "").trim();
-    if (!fileId) continue;
+    if (!fileId) return null;
     try {
-      const res = await apiGet("ticket_drive_data", { file_id: fileId, user_email: email });
-      const data = responseDataObject(res);
-      const b64 = String(data?.base64 || "").trim();
-      const mime = String(data?.mimeType || data?.mime_type || "image/jpeg").trim() || "image/jpeg";
-      if (!b64 || !mime.startsWith("image/")) continue;
-      out.push({
+      const got = await fetchTicketDriveDataUri_(fileId, apiGet, email);
+      if (!got?.dataUri) return null;
+      return {
         label: att.label || "Ticket",
-        dataUri: `data:${mime};base64,${b64}`,
-        mime,
+        dataUri: got.dataUri,
+        mime: got.mime,
         file_id: fileId,
-      });
-    } catch {
-      // Sin acceso Drive en servidor o archivo no legible
+        url: att.url || "",
+      };
+    } catch (err) {
+      if (typeof __DEV__ !== "undefined" && __DEV__) {
+        // eslint-disable-next-line no-console
+        console.warn("[hydrateTicketAttachmentsViaApi_]", fileId, err?.message || err);
+      }
+      return null;
     }
-  }
-  return out;
+  });
+  return results.filter(Boolean);
 }
 
 function isDriveFetchBlockedInBrowser_(url) {
@@ -150,14 +250,8 @@ export async function ticketUrlToDataUri_(url, { readLocalFile, apiGet, userEmai
   const fileId = extractDriveFileId(raw);
   if (fileId && typeof apiGet === "function" && userEmail) {
     try {
-      const res = await apiGet("ticket_drive_data", {
-        file_id: fileId,
-        user_email: String(userEmail || "").trim().toLowerCase(),
-      });
-      const data = responseDataObject(res);
-      const b64 = String(data?.base64 || "").trim();
-      const mime = String(data?.mimeType || data?.mime_type || "image/jpeg").trim() || "image/jpeg";
-      if (b64) return `data:${mime};base64,${b64}`;
+      const got = await fetchTicketDriveDataUri_(fileId, apiGet, userEmail);
+      if (got?.dataUri) return got.dataUri;
     } catch {
       // Sin fallback a Drive en el navegador (CORS)
     }

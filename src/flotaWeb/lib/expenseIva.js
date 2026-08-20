@@ -50,6 +50,11 @@ const PRIMARY_AMOUNT_FIELD = {
 
 export function primaryExpenseAmount(e, tipo) {
   const t = String(tipo || e?.tipo_gasto || "").trim().toUpperCase();
+  if (t === "GASTOS_BILLETES") {
+    const total = parseExpenseNum(e?.coste_total || e?.importe_pagar || e?.importe);
+    if (total) return total;
+    return parseExpenseNum(e?.precio_total_billete) + parseExpenseNum(e?.tasas_billete);
+  }
   const field = PRIMARY_AMOUNT_FIELD[t];
   if (field) {
     const n = parseExpenseNum(e?.[field]);
@@ -78,7 +83,100 @@ export function entityFromExpenseRecord(e) {
   if (t === "HOSPEDAJE") return String(e?.entidad_hospedaje || e?.proveedor || e?.entidad || "").trim();
   if (t === "MANUTENCION") return String(e?.establecimiento_manutencion || e?.proveedor || e?.entidad || "").trim();
   if (t === "KILOMETRAJE_COLABORADOR") return String(e?.accion_colaborador || e?.origen_colaborador || "").trim();
+  if (t === "GASTOS_BILLETES") return String(e?.compania_billete || e?.proveedor || e?.entidad || "").trim();
   return String(e?.proveedor || e?.entidad || "").trim();
+}
+
+const GENERIC_SHEET_CONCEPTOS_ = new Set([
+  "otros gastos",
+  "hospedaje",
+  "manutención",
+  "manutencion",
+  "combustible",
+  "peaje",
+  "aparcamiento",
+  "dieta",
+  "consumible",
+  "gasto",
+  "otros",
+]);
+
+const TIPO_SHEET_CONCEPTO_MAP_ = {
+  COMBUSTIBLES: "combustible",
+  DIETAS: "dieta",
+  CONSUMIBLES: "consumible",
+  MANTENIMIENTO_REPARACIONES: "mantenimiento",
+  REPUESTOS_RECAMBIO: "repuestos",
+  PARKING: "aparcamiento",
+  PEAJES: "peaje",
+  HOSPEDAJE: "hospedaje",
+  MANUTENCION: "manutención",
+  ITV: "itv",
+  MULTAS_SANCIONES: "multa/sanción",
+  OTROS: "otros gastos",
+  KILOMETRAJE_COLABORADOR: "kilometraje colaborador",
+  SEGURO: "seguro",
+  IMPUESTOS: "impuestos",
+  OTROS_IMPUESTOS: "otros impuestos",
+  GASTOS_BILLETES: "billete",
+};
+
+function isGenericSheetConcepto_(text, tipo) {
+  const s = String(text || "")
+    .trim()
+    .toLowerCase();
+  if (!s) return true;
+  if (s === String(tipo || "").trim().toLowerCase()) return true;
+  return GENERIC_SHEET_CONCEPTOS_.has(s);
+}
+
+/** Concepto descriptivo del gasto (p. ej. concepto_otros_gastos), no la etiqueta del tipo. */
+export function conceptoFromExpenseRecord(expense) {
+  const e = expense || {};
+  const t = String(e.tipo_gasto || "")
+    .trim()
+    .toUpperCase();
+  if (t === "REPUESTOS_RECAMBIO") return String(e.descripcion_repuestos || e.concepto || "").trim();
+  if (t === "MANTENIMIENTO_REPARACIONES") return String(e.descripcion_mantenimiento || e.concepto || "").trim();
+  if (t === "OTROS" || t === "HOSPEDAJE" || t === "MANUTENCION") {
+    return String(e.concepto_otros_gastos || e.concepto || "").trim();
+  }
+  if (t === "PARKING") return String(e.tipo_zona || e.concepto || "").trim();
+  if (t === "PEAJES") return String(e.concepto || "").trim();
+  if (t === "COMBUSTIBLES") return String(e.numero_ticket || e.marca || e.concepto || "").trim();
+  if (t === "ITV") return String(e.estacion_itv || e.concepto || "").trim();
+  if (t === "MULTAS_SANCIONES") return String(e.tipo_infraccion || e.concepto || "").trim();
+  if (t === "SEGURO") return String(e.cobertura || e.concepto || "").trim();
+  if (t === "IMPUESTOS") return String(e.periodo_ivm || e.concepto || "I.V.M.").trim();
+  if (t === "OTROS_IMPUESTOS") return String(e.tipo_otro_impuesto || e.tipo_impuesto || e.concepto || "").trim();
+  if (t === "KILOMETRAJE_COLABORADOR") {
+    const origen = String(e.origen_colaborador || "").trim();
+    const destino = String(e.destino_colaborador || "").trim();
+    return String(e.motivo_colaborador || e.concepto || (origen || destino ? `${origen} -> ${destino}` : "")).trim();
+  }
+  if (t === "GASTOS_BILLETES") {
+    const origen = String(e.origen_billete || "").trim();
+    const destino = String(e.destino_billete || "").trim();
+    return String(e.concepto_billete || e.concepto || (origen || destino ? `${origen} -> ${destino}` : "")).trim();
+  }
+  return String(e.concepto || "").trim();
+}
+
+/** Concepto para línea de hoja: prioriza el gasto real frente a «otros gastos» genérico. */
+export function resolveSheetLineConcepto(linea, rawExpense) {
+  const ln = linea && typeof linea === "object" ? linea : {};
+  const e = rawExpense && typeof rawExpense === "object" ? rawExpense : {};
+  const merged = { ...ln, ...e, tipo_gasto: ln.tipo_gasto || e.tipo_gasto };
+  const fromExpense = conceptoFromExpenseRecord(merged);
+  if (fromExpense && !isGenericSheetConcepto_(fromExpense, merged.tipo_gasto)) return fromExpense;
+  const fromLine = String(ln.concepto || "").trim();
+  if (fromLine && !isGenericSheetConcepto_(fromLine, merged.tipo_gasto)) return fromLine;
+  if (fromExpense) return fromExpense;
+  if (fromLine) return fromLine;
+  const tipo = String(merged.tipo_gasto || "")
+    .trim()
+    .toUpperCase();
+  return TIPO_SHEET_CONCEPTO_MAP_[tipo] || "gasto";
 }
 
 /** Prioriza el importe del tipo (peaje, combustible…) si importe_pagar está vacío o desactualizado. */
@@ -128,12 +226,49 @@ export function recalcIvaFields({ iva_pct, importe_pagar, primaryTotal }) {
   };
 }
 
+/** IVA% por defecto en hoja LIFE cuando el gasto no trae porcentaje guardado. */
+export function defaultIvaPctForExpenseTipo(tipo) {
+  const t = String(tipo || "").trim().toUpperCase();
+  if (t === "HOSPEDAJE" || t === "MANUTENCION" || t === "DIETAS") return 10;
+  if (
+    t === "COMBUSTIBLES" ||
+    t === "PEAJES" ||
+    t === "PARKING" ||
+    t === "ITV" ||
+    t === "REPUESTOS_RECAMBIO" ||
+    t === "MANTENIMIENTO_REPARACIONES" ||
+    t === "SEGURO" ||
+    t === "OTROS"
+  ) {
+    return 21;
+  }
+  return "";
+}
+
+function normalizeIvaAliases_(payload) {
+  const p = { ...(payload || {}) };
+  if (!hasIvaPctValue(p.iva_pct) && hasIvaPctValue(p.iva_porcentaje)) {
+    p.iva_pct = p.iva_porcentaje;
+  }
+  if (!parseExpenseNum(p.iva_eur) && parseExpenseNum(p.cuota_iva)) {
+    p.iva_eur = p.cuota_iva;
+  }
+  if (!parseExpenseNum(p.base_imponible) && parseExpenseNum(p.importe_sin_iva)) {
+    p.base_imponible = p.importe_sin_iva;
+  }
+  if (!parseExpenseNum(p.importe_pagar) && parseExpenseNum(p.coste_total)) {
+    p.importe_pagar = p.coste_total;
+  }
+  return p;
+}
+
 export function enrichExpensePayloadWithIva(payload) {
-  const tipo = String(payload?.tipo_gasto || "").trim().toUpperCase();
+  const normalized = normalizeIvaAliases_(payload);
+  const tipo = String(normalized?.tipo_gasto || "").trim().toUpperCase();
   if (tipo === "KILOMETRAJE_COLABORADOR") {
-    const total = parseExpenseNum(payload.importe_km_colaborador);
+    const total = parseExpenseNum(normalized.importe_km_colaborador);
     return {
-      ...payload,
+      ...normalized,
       base_imponible: total,
       iva_pct: 0,
       iva_eur: 0,
@@ -143,19 +278,25 @@ export function enrichExpensePayloadWithIva(payload) {
     };
   }
 
-  const primary = primaryExpenseAmount(payload, tipo);
-  const storedTotal = resolveExpenseIvaTotalInput(payload?.importe_pagar, primary);
-  const storedBase = parseExpenseNum(payload?.base_imponible);
-  const storedIva = parseExpenseNum(payload?.iva_eur);
-  const pctDefined = hasIvaPctValue(payload?.iva_pct);
+  let ivaPct = normalized?.iva_pct;
+  if (!hasIvaPctValue(ivaPct)) {
+    const def = defaultIvaPctForExpenseTipo(tipo);
+    if (def !== "") ivaPct = def;
+  }
+
+  const primary = primaryExpenseAmount(normalized, tipo);
+  const storedTotal = resolveExpenseIvaTotalInput(normalized?.importe_pagar, primary);
+  const storedBase = parseExpenseNum(normalized?.base_imponible);
+  const storedIva = parseExpenseNum(normalized?.iva_eur);
+  const pctDefined = hasIvaPctValue(ivaPct);
 
   if (pctDefined && (storedBase > 0 || storedIva > 0 || storedTotal > 0)) {
-    const pct = parseExpenseNum(payload.iva_pct);
+    const pct = parseExpenseNum(ivaPct);
     const base = storedBase || baseFromTotalAndPct(storedTotal, pct);
     const ivaEur = storedIva || computeIvaEur(base, pct);
     const importePagar = storedTotal || Number((base + ivaEur).toFixed(2));
     return {
-      ...payload,
+      ...normalized,
       base_imponible: base,
       iva_pct: pct,
       iva_eur: ivaEur,
@@ -166,13 +307,13 @@ export function enrichExpensePayloadWithIva(payload) {
   }
 
   const fin = recalcIvaFields({
-    iva_pct: payload?.iva_pct,
+    iva_pct: ivaPct,
     importe_pagar: storedTotal,
     primaryTotal: primary,
   });
 
   return {
-    ...payload,
+    ...normalized,
     base_imponible: fin.base_imponible,
     iva_pct: fin.iva_pct === "" ? "" : fin.iva_pct,
     iva_eur: fin.iva_eur,
@@ -200,16 +341,30 @@ export function enrichSheetLineaFinancialFromExpense(linea, rawExpense) {
   };
 }
 
-/** Nº PERS. en hoja LIFE: solo hospedaje (Nº personas) y manutención (Nº comensales). */
+/** Nº PERS. en hoja LIFE: hospedaje, manutención, otros y billetes. */
 export function lifeSheetNumPersonasFromExpense(linea, rawExpense) {
   const ln = linea && typeof linea === "object" ? linea : {};
   const e = rawExpense && typeof rawExpense === "object" ? rawExpense : {};
   const tipo = String(ln.tipo_gasto || e.tipo_gasto || "").trim().toUpperCase();
-  if (tipo === "HOSPEDAJE") {
-    return String(ln.numero_personas_hospedaje ?? e.numero_personas_hospedaje ?? "").trim();
+  if (tipo === "HOSPEDAJE" || tipo === "OTROS" || tipo === "GASTOS_BILLETES") {
+    return String(
+      ln.num_personas ||
+        ln.numero_personas_billete ||
+        ln.numero_personas_hospedaje ||
+        e.numero_personas_billete ||
+        e.numero_personas_hospedaje ||
+        e.num_personas ||
+        ""
+    ).trim();
   }
   if (tipo === "MANUTENCION") {
-    return String(ln.numero_comensales_manutencion ?? e.numero_comensales_manutencion ?? "").trim();
+    return String(
+      ln.num_personas ||
+        ln.numero_comensales_manutencion ||
+        e.numero_comensales_manutencion ||
+        e.num_personas ||
+        ""
+    ).trim();
   }
   return "";
 }

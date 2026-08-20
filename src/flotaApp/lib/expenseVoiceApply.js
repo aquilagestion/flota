@@ -27,6 +27,8 @@ const WEB_APPLY = {
   tipo_repostaje: "setTipoRepostaje",
   litros_repostados: "setLitrosRepostados",
   precio_por_litro: "setPrecioPorLitro",
+  total_a_pagar: "setTotalAPagar",
+  iva_porcentaje: "setIvaPorcentaje",
   lugar_repostaje: "setLugarRepostaje",
   numero_ticket: "setNumeroTicket",
   kilometros_actuales: "setKilometrosActuales",
@@ -126,18 +128,28 @@ export function resolveDepartamentoSelectForForm(rawValue, projectOptions = []) 
 function findDepartamentoMatch_(value, projectOptions = []) {
   const v = String(value || "").trim();
   if (!v) return null;
+  if (v === OTRO_DEPARTAMENTO || v === "__OTRO__") return null;
   const vn = normDept_(v);
 
   const allOpts = Array.isArray(projectOptions) ? projectOptions : [];
+  // El valor guardado en gastos es siempre el nombre (columna B), nunca el id (columna A).
+  const toDeptValue_ = (o) => String(o?.label || o?.value || "").trim();
+
   const projByValue = allOpts.find((o) => String(o?.value || "").trim() === v);
-  if (projByValue) return { value: String(projByValue.value).trim(), custom: "" };
+  if (projByValue) {
+    const name = toDeptValue_(projByValue);
+    return name ? { value: name, custom: "" } : null;
+  }
 
   const match = allOpts.find((o) => {
     const label = normDept_(String(o.label || o.value || ""));
     const val = normDept_(String(o.value || ""));
     return label === vn || val === vn || label.includes(vn) || vn.includes(label) || vn.includes(val);
   });
-  if (match) return { value: String(match.value || "").trim(), custom: "" };
+  if (match) {
+    const name = toDeptValue_(match);
+    return name ? { value: name, custom: "" } : null;
+  }
 
   return null;
 }
@@ -308,8 +320,8 @@ export function applyVoiceFieldNative(key, value, setForm, projectOptions = [], 
     return true;
   }
 
-  if (k === "iva_pct") {
-    setForm((p) => ({ ...p, iva_pct: v }));
+  if (k === "iva_pct" || k === "iva_porcentaje") {
+    setForm((p) => ({ ...p, iva_porcentaje: v }));
     return true;
   }
 

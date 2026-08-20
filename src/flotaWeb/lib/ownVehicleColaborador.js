@@ -109,11 +109,24 @@ export function normalizeExpensePayloadForColaboradorWorkflow(payload, context) 
   return out;
 }
 
-import { enrichSheetLineaFinancialFromExpense } from "./expenseIva";
+import { enrichSheetLineaFinancialFromExpense, resolveSheetLineConcepto } from "./expenseIva";
+import { expenseDate, normalizeDateToDmy } from "./format";
 
 export function enrichSheetLineaFromExpense(linea, rawExpense) {
-  const ln = enrichSheetLineaFinancialFromExpense(linea, rawExpense);
-  const e = rawExpense || {};
+  let ln = enrichSheetLineaFinancialFromExpense(linea, rawExpense);
+  const e = rawExpense && typeof rawExpense === "object" ? rawExpense : {};
+  // Preferir fecha actual del gasto (tras editar); el snapshot de la hoja puede estar desfasado.
+  const fromExpense = expenseDate({ ...ln, ...e, tipo_gasto: ln.tipo_gasto || e.tipo_gasto });
+  const fecha =
+    normalizeDateToDmy(fromExpense || "") ||
+    normalizeDateToDmy(e.fecha || "") ||
+    normalizeDateToDmy(ln.fecha || "") ||
+    String(ln.fecha || "").trim();
+  ln = { ...ln, fecha };
+
+  const concepto = resolveSheetLineConcepto(ln, e);
+  ln = { ...ln, concepto };
+
   if (!isOwnVehicleExpenseRecord(e) && !isOwnVehicleExpenseRecord(ln)) return ln;
 
   const km = Number(
@@ -138,8 +151,10 @@ export function enrichSheetLineaFromExpense(linea, rawExpense) {
     eur_km: eurKm || ln.eur_km || 0,
     medio_transporte: String(ln.medio_transporte || e.accion_colaborador || "coche propio").trim(),
     motivo_salida: String(ln.motivo_salida || e.motivo_colaborador || "").trim(),
-    fecha_inicio: String(ln.fecha_inicio || e.fecha_viaje_colaborador || e.fecha || "").trim(),
-    fecha_fin: String(ln.fecha_fin || e.fecha_fin_viaje_colaborador || e.fecha_fin_viaje || e.fecha_viaje_colaborador || "").trim(),
+    fecha_inicio: normalizeDateToDmy(e.fecha_viaje_colaborador || e.fecha || ln.fecha_inicio || "") || "",
+    fecha_fin:
+      normalizeDateToDmy(e.fecha_fin_viaje_colaborador || e.fecha_fin_viaje || e.fecha_viaje_colaborador || ln.fecha_fin || "") ||
+      "",
     itinerario,
   };
 }

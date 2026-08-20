@@ -123,7 +123,7 @@ function puedeVerHojaGastoResumen_(requester, rol, ownerEmail, matriculasMap) {
   var r = String(rol || "").trim().toUpperCase();
   if (!req) return false;
   if (r === "GESTOR" || r === "ADMINISTRACION") return true;
-  if (r === "OPERARIO") return owner === req;
+  if (r === "OPERARIO" || r === "COLABORADOR") return owner === req;
   if (r === "RESPONSABLE") {
     if (owner === req) return true;
     var assigned = getMatriculasACargo_(req);
@@ -164,46 +164,59 @@ function getAllGastosRows_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var out = [];
 
-  // 1) Si existe GASTOS, lo usamos como fuente principal
+  // 1) GASTOS general (fuente principal)
   var shGeneral = ss.getSheetByName("GASTOS");
   if (shGeneral) {
     out = out.concat(readSheetObjects_("GASTOS"));
   }
 
-  // 2) Si no hay GASTOS o está vacía, intentamos pestañas por tipo
-  if (!out.length) {
-    var typeSheets = [
-      "GASTOS_COMBUSTIBLE",
-      "GASTOS_SEGURO",
-      "GASTOS_PEAJES",
-      "GASTOS_PARKING",
-      "GASTOS_IMPUESTOS",
-      "GASTOS_OTROS_IMPUESTOS",
-      "GASTOS_ITV",
-      "GASTOS_REPUESTOS",
-      "GASTOS_MANTENIMIENTO_REPARACIONES",
-      "GASTOS_OTROS",
-      "GASTOS_MULTAS"
-    ];
-    for (var i = 0; i < typeSheets.length; i++) {
-      if (ss.getSheetByName(typeSheets[i])) {
-        out = out.concat(readSheetObjects_(typeSheets[i]));
-      }
+  // 2) Pestañas por tipo: incorporar filas que no estén ya en GASTOS (p. ej. histórico solo en tipo)
+  var typeSheets = [
+    "GASTOS_COMBUSTIBLE",
+    "GASTOS_SEGURO",
+    "GASTOS_PEAJES",
+    "GASTOS_PARKING",
+    "GASTOS_IMPUESTOS",
+    "GASTOS_OTROS_IMPUESTOS",
+    "GASTOS_ITV",
+    "GASTOS_REPUESTOS",
+    "GASTOS_MANTENIMIENTO_REPARACIONES",
+    "GASTOS_OTROS",
+    "GASTOS_BILLETES",
+    "GASTOS_MULTAS",
+    "GASTOS_KILOMETRAJE_COLABORADOR"
+  ];
+  for (var i = 0; i < typeSheets.length; i++) {
+    if (ss.getSheetByName(typeSheets[i])) {
+      out = out.concat(readSheetObjects_(typeSheets[i]));
     }
   }
 
-  // Dedupe por id_gasto
+  // Dedupe por id_gasto (prioriza la primera aparición = GASTOS)
   var seen = {};
   var dedup = [];
   for (var j = 0; j < out.length; j++) {
-    var id = String(out[j].id_gasto || "").trim();
+    var row = out[j];
+    if (!String(row.forma_pago || "").trim()) row.forma_pago = "Usuario";
+    var id = String(row.id_gasto || "").trim();
     if (!id) {
-      dedup.push(out[j]);
+      dedup.push(row);
       continue;
     }
-    if (seen[id]) continue;
-    seen[id] = true;
-    dedup.push(out[j]);
+    if (seen[id]) {
+      var existing = seen[id];
+      var keys = Object.keys(row);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (key === "_row") continue;
+        if (existing[key] == null || String(existing[key]).trim() === "") {
+          if (row[key] != null && String(row[key]).trim() !== "") existing[key] = row[key];
+        }
+      }
+      continue;
+    }
+    seen[id] = row;
+    dedup.push(row);
   }
   return dedup;
 }
@@ -238,7 +251,10 @@ function apiGastoList(payload) {
     return false;
   });
 
-  return filtered;
+  return filtered.map(function (r) {
+    if (!String(r.forma_pago || "").trim()) r.forma_pago = "Usuario";
+    return serializeRowFechasForApi_(r);
+  });
 }
 
 // ----------------------------------------------------------------------

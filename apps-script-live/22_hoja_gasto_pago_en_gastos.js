@@ -28,7 +28,9 @@ function apiHojaGastoActualizarPago(payload) {
   var referenciaPago = String(payload.hoja_gasto_referencia_pago || payload.referencia_pago || "").trim();
 
   if (estadoPago === "PAGADA" && !fechaPago) {
-    fechaPago = new Date().toISOString();
+    fechaPago = normalizeDateDMYCell_(new Date());
+  } else if (fechaPago) {
+    fechaPago = normalizeDateDMYCell_(fechaPago);
   }
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -65,7 +67,7 @@ function apiHojaGastoActualizarPago(payload) {
   var colMetodoPago = need("hoja_gasto_metodo_pago");
   var colRefPago = need("hoja_gasto_referencia_pago");
 
-  var hojaVals = sh.getRange(2, colHoja, lastRow - 1, 1).getValues();
+  var hojaVals = sh.getRange(2, colHoja, lastRow, 1).getValues();
   var updated = 0;
 
   for (var r = 0; r < hojaVals.length; r++) {

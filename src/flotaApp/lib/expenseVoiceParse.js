@@ -240,6 +240,38 @@ function norm_(s) {
     .trim();
 }
 
+/**
+ * Normaliza enunciados de índice de menú para STT español:
+ * «2-1» / «2/1» → «2 1», «veinte y uno» / «veinti uno» → «veintiuno».
+ */
+export function normalizeVoiceMenuIndexUtterance(raw) {
+  let t = norm_(raw)
+    .replace(/[–—−]/g, "-")
+    .replace(/(\d)\s*[-/.,]\s*(\d)/g, "$1 $2")
+    .replace(/\bveinte\s+y\s+uno\b/g, "veintiuno")
+    .replace(/\bveinti\s*[- ]\s*uno\b/g, "veintiuno")
+    .replace(/\bveinte\s+y\s+dos\b/g, "veintidos")
+    .replace(/\bveinti\s*[- ]\s*dos\b/g, "veintidos")
+    .replace(/\bveinte\s+y\s+tres\b/g, "veintitres")
+    .replace(/\bveinti\s*[- ]\s*tres\b/g, "veintitres")
+    .replace(/\bveinte\s+y\s+cuatro\b/g, "veinticuatro")
+    .replace(/\bveinti\s*[- ]\s*cuatro\b/g, "veinticuatro")
+    .replace(/\bveinte\s+y\s+cinco\b/g, "veinticinco")
+    .replace(/\bveinti\s*[- ]\s*cinco\b/g, "veinticinco")
+    .replace(/\bveinte\s+y\s+seis\b/g, "veintiseis")
+    .replace(/\bveinti\s*[- ]\s*seis\b/g, "veintiseis")
+    .replace(/\bveinte\s+y\s+siete\b/g, "veintisiete")
+    .replace(/\bveinti\s*[- ]\s*siete\b/g, "veintisiete")
+    .replace(/\bveinte\s+y\s+ocho\b/g, "veintiocho")
+    .replace(/\bveinti\s*[- ]\s*ocho\b/g, "veintiocho")
+    .replace(/\bveinte\s+y\s+nueve\b/g, "veintinueve")
+    .replace(/\bveinti\s*[- ]\s*nueve\b/g, "veintinueve")
+    .replace(/\btreinta\s+y\s+uno\b/g, "treinta y uno")
+    .replace(/\s+/g, " ")
+    .trim();
+  return t;
+}
+
 function pad2_(n) {
   return String(n).padStart(2, "0");
 }
@@ -768,10 +800,10 @@ function clampMenuIndex_(n) {
   return x;
 }
 
-/** Índice de menú numerado (1-based): «opción 3», «veintiuno», «dos uno»… */
+/** Índice de menú numerado (1-based): «opción 3», «veintiuno», «dos uno», «2-1»… */
 export function parseOptionIndex_(raw, maxIndex = NUMBERED_MENU_MAX_INDEX) {
   const cap = Math.min(NUMBERED_MENU_MAX_INDEX, Math.max(1, Number(maxIndex) || NUMBERED_MENU_MAX_INDEX));
-  const t = norm_(raw);
+  const t = normalizeVoiceMenuIndexUtterance(raw);
   if (!t) return null;
 
   let m = t.match(/\b(?:opcion|numero)\s*(\d+)\b/);
@@ -791,17 +823,23 @@ export function parseOptionIndex_(raw, maxIndex = NUMBERED_MENU_MAX_INDEX) {
     return clampMenuIndex_(WORD_NUM[tokens[0]]);
   }
 
-  if (tokens.length <= 2) {
+  // «1 1» / «uno uno» / «2-1» → 11 / 21 (cifra a cifra) antes de tomar solo el primer dígito
+  if (tokens.length >= 2) {
+    const byDigits = parseOptionIndexFromDigitWords_(t);
+    if (byDigits != null && byDigits <= cap) return byDigits;
+  }
+
+  if (tokens.length === 1) {
     m = t.match(/\b(\d{1,2})\b/);
     if (m) return clampMenuIndex_(Number(m[1]));
   }
 
-  if (isPrimarilyDigitByDigit_(raw)) {
-    const byDigits = parseOptionIndexFromDigitWords_(raw);
+  if (isPrimarilyDigitByDigit_(t)) {
+    const byDigits = parseOptionIndexFromDigitWords_(t);
     if (byDigits != null && byDigits <= cap) return byDigits;
   }
 
-  if (!isPrimarilyDigitByDigit_(raw) && tokens.length <= 4) {
+  if (!isPrimarilyDigitByDigit_(t) && tokens.length <= 4) {
     const n = parseSpanishInteger_(t);
     if (n != null && n >= 1 && n <= cap) return n;
   }
@@ -872,7 +910,7 @@ export function tryQuickNumberedMenuPick(field, transcript) {
     if (field.key === "iva_pct") {
       const v = parseIvaPercent_(cand);
       if (v) return v;
-      if (idx >= 1 && idx <= 3) return values[idx - 1];
+      if (idx >= 1 && idx <= 4) return values[idx - 1];
       continue;
     }
 
@@ -885,14 +923,14 @@ export function tryQuickNumberedMenuPick(field, transcript) {
 
 /** ¿La frase es sobre todo una elección por índice (número)? */
 export function isPrimarilyVoiceIndexPick(raw, maxIndex = 40) {
-  const t = norm_(raw);
+  const t = normalizeVoiceMenuIndexUtterance(raw);
   if (!t) return false;
   const tokens = t.split(/\s+/).filter(Boolean);
   if (tokens.length === 1) {
-    const idx = parseOptionIndex_(raw, maxIndex);
+    const idx = parseOptionIndex_(t, maxIndex);
     if (idx != null && idx >= 1 && idx <= maxIndex) return true;
   }
-  const idx = parseOptionIndex_(raw, maxIndex);
+  const idx = parseOptionIndex_(t, maxIndex);
   if (idx == null || idx < 1 || idx > maxIndex) return false;
   if (tokens.length <= 4) return true;
   return /^(opcion|numero|el|la)\b/.test(t);
@@ -936,11 +974,11 @@ function parseSelectByIndex_(raw, options = [], values = null) {
 function parseIvaPercent_(raw) {
   const values = IVA_VOICE_MENU.map((o) => o.value);
   const idx = parseOptionIndex_(raw);
-  if (idx === 4) {
+  if (idx === 5) {
     const pct = parsePercent_(raw);
     return pct || "";
   }
-  if (idx >= 1 && idx <= 3) return values[idx - 1];
+  if (idx >= 1 && idx <= 4) return values[idx - 1];
   const t = norm_(raw);
   if (/\botro\b/.test(t)) return parsePercent_(raw) || "";
   return parsePercent_(raw) || "";

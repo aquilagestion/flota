@@ -10,7 +10,8 @@ export async function loadExpenseSheetLogosForTemplate(templateId) {
   const isLife = templateId !== EXPENSE_SHEET_TEMPLATE.GREFA_RELACION;
   const lifeKey = logoAssetKeyForTemplate(templateId);
   const grefa = `${LOGO_BASE}logo-grefa-header.png`;
-  if (!isLife) return { grefa, lifeProject: "", lifeNatura: "" };
+  const grefaSello = `${LOGO_BASE}logo-grefa-sello.png`;
+  if (!isLife) return { grefa, grefaSello, lifeProject: "", lifeNatura: "" };
   const lifeFile =
     lifeKey === "abilas"
       ? "logo-life-abilas.png"
@@ -19,6 +20,7 @@ export async function loadExpenseSheetLogosForTemplate(templateId) {
         : "logo-life-pygargus.png";
   return {
     grefa,
+    grefaSello,
     lifeProject: `${LOGO_BASE}${lifeFile}`,
     lifeNatura: `${LOGO_BASE}logo-life-natura2000.png`,
   };

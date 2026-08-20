@@ -238,12 +238,18 @@ function formatTimeHM_(d) {
   return Utilities.formatDate(d, CFG.TIMEZONE, "HH:mm");
 }
 
-function parseLiberacionInicioFin_(fechaInicio, horaInicio, fechaFin, horaFin) {
-  var ini = parseFechaHoraDesdeFila_(fechaInicio, horaInicio);
-  if (!ini) return { ini: null, fin: null };
-  var horaFinExplicita = !(horaFin === undefined || horaFin === null || String(horaFin).trim() === "");
-  var fin = parseFechaHoraDesdeFila_(fechaFin, horaFinExplicita ? horaFin : "23:59");
-  return { ini: ini, fin: fin };
+/** Solo fecha (ignora horas): inicio del día local. */
+function parseFechaSoloInicioDia_(fecha) {
+  var d = parseFechaHoraDesdeFila_(fecha, "00:00");
+  if (!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+/** Solo fecha (ignora horas): fin del día local. */
+function parseFechaSoloFinDia_(fecha) {
+  var d = parseFechaHoraDesdeFila_(fecha, "23:59");
+  if (!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 }
 
 /**
@@ -253,12 +259,14 @@ function parseLiberacionInicioFin_(fechaInicio, horaInicio, fechaFin, horaFin) {
  * - liberación total: marca solicitud como LIBERADA y cierra su uso.
  * - liberación parcial: recorta/parte la solicitud en tramos APROBADA restantes.
  *
+ * La liberación se calcula **solo por fechas** (día completo). Se ignoran
+ * hora_inicio / hora_fin de la solicitud y del payload.
+ *
  * Requiere payload:
  * - id_solicitud
  * - fecha_inicio_liberacion (dd/MM/yyyy o yyyy-MM-dd)
  * - fecha_fin_liberacion (dd/MM/yyyy o yyyy-MM-dd)
  * Opcional:
- * - hora_inicio_liberacion, hora_fin_liberacion
  * - motivo
  * - user_email / responsable_email / resuelto_por_email
  */
@@ -270,8 +278,17 @@ function apiLiberacionCrear(payload) {
   var requester = normalizeEmail_(
     payload.user_email || payload.responsable_email || payload.resuelto_por_email || ""
   );
+  if (!requester) throw new Error("Falta user_email");
   var rol = normalizeRolSegunUsuarios_(requester);
-  if (rol !== "GESTOR" && rol !== "RESPONSABLE" && rol !== "ADMINISTRACION") {
+  // USUARIO (OPERARIO legacy), COLABORADOR, RESPONSABLE, GESTOR, ADMINISTRACION
+  if (
+    rol !== "GESTOR" &&
+    rol !== "RESPONSABLE" &&
+    rol !== "ADMINISTRACION" &&
+    rol !== "USUARIO" &&
+    rol !== "OPERARIO" &&
+    rol !== "COLABORADOR"
+  ) {
     throw new Error("No autorizado para liberar solicitudes");
   }
 
@@ -286,38 +303,50 @@ function apiLiberacionCrear(payload) {
 
   var mat = normalizeMatricula_(sol.matricula);
   if (!mat) throw new Error("Solicitud sin matrícula");
+  var titular = normalizeEmail_(sol.trabajador_email || sol.usuario_email || "");
+
   if (rol === "RESPONSABLE") {
     var assigned = getMatriculasACargo_(requester);
-    if (!assigned[mat]) throw new Error("Solo puedes liberar solicitudes de vehículos a tu cargo");
+    if (!assigned[mat] && titular !== requester) {
+      throw new Error("Solo puedes liberar solicitudes de vehículos a tu cargo o tus propias reservas APROBADAS");
+    }
+  } else if (rol === "USUARIO" || rol === "OPERARIO" || rol === "COLABORADOR") {
+    if (!titular || titular !== requester) {
+      throw new Error("Solo puedes liberar tus propias solicitudes APROBADAS");
+    }
   }
+  // GESTOR / ADMINISTRACION: cualquier APROBADA
 
   var fIniLib = String(payload.fecha_inicio_liberacion || payload.fecha_inicio || "").trim();
   var fFinLib = String(payload.fecha_fin_liberacion || payload.fecha_fin || "").trim();
   if (!fIniLib || !fFinLib) throw new Error("Faltan fecha_inicio_liberacion y fecha_fin_liberacion");
 
-  var hIniLib = String(payload.hora_inicio_liberacion || payload.hora_inicio || "").trim();
-  var hFinLib = String(payload.hora_fin_liberacion || payload.hora_fin || "").trim();
-  var parsedLib = parseLiberacionInicioFin_(fIniLib, hIniLib, fFinLib, hFinLib);
-  var libIni = parsedLib.ini;
-  var libFin = parsedLib.fin;
-  if (!libIni || !libFin || libIni >= libFin) throw new Error("Rango de liberación inválido");
+  // Solo fechas (día completo); se desprecian horas del payload y de la solicitud.
+  var libIni = parseFechaSoloInicioDia_(fIniLib);
+  var libFin = parseFechaSoloFinDia_(fFinLib);
+  if (!libIni || !libFin || libIni > libFin) throw new Error("Rango de liberación inválido");
 
-  var solIni = parseFechaHoraDesdeFila_(sol.fecha_inicio, sol.hora_inicio);
-  var solFin = parseFechaHoraDesdeFila_(sol.fecha_fin, sol.hora_fin);
-  if (!solIni || !solFin || solIni >= solFin) throw new Error("Solicitud original con fechas inválidas");
+  var solDayIni = parseFechaSoloInicioDia_(sol.fecha_inicio);
+  var solDayFin = parseFechaSoloFinDia_(sol.fecha_fin);
+  if (!solDayIni || !solDayFin || solDayIni > solDayFin) {
+    throw new Error("Solicitud original con fechas inválidas");
+  }
 
-  if (libIni < solIni || libFin > solFin) {
-    throw new Error("El rango a liberar debe estar dentro del rango aprobado original");
+  if (libIni < solDayIni || libFin > solDayFin) {
+    throw new Error("El rango a liberar debe estar dentro del rango aprobado original (solo fechas)");
   }
 
   var motivo = String(payload.motivo || payload.motivo_liberacion || "").trim();
   if (!motivo) motivo = "Liberación de reserva";
 
-  var keepBefore = solIni < libIni;
-  var keepAfter = libFin < solFin;
+  var keepBefore = solDayIni < libIni;
+  var keepAfter = libFin < solDayFin;
   var segmentos = [];
-  if (keepBefore) segmentos.push({ ini: solIni, fin: libIni });
-  if (keepAfter) segmentos.push({ ini: libFin, fin: solFin });
+  if (keepBefore) segmentos.push({ ini: solDayIni, fin: libIni });
+  if (keepAfter) {
+    var afterIni = new Date(libFin.getFullYear(), libFin.getMonth(), libFin.getDate() + 1, 0, 0, 0, 0);
+    if (afterIni <= solDayFin) segmentos.push({ ini: afterIni, fin: solDayFin });
+  }
 
   var headers = getHeaders_(shSol);
   var rowNum = Number(sol._row || 0);

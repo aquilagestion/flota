@@ -86,6 +86,8 @@ var HEADERS_POR_TIPO = {
   GASTOS_OTROS: BASE_COLS.concat([
     "fecha_otros_gastos", "proveedor_otros_gastos",
     "concepto_otros_gastos", "importe_otros_gastos",
+    "numero_factura_otros",
+    "numero_personas_hospedaje", "numero_comensales_manutencion",
     "observaciones"
   ]).concat(TAIL_COLS).concat(ADJUNTO_COLS),
 
@@ -275,13 +277,10 @@ function apiGastoCrear(payload) {
   ).trim().toLowerCase();
   if (!responsable_email) throw new Error("Falta campo: responsable_email");
 
-  // Adjuntos obligatorios
+  // Adjuntos de ticket (opcionales)
   var ticketUrlsArr = normalizeMultiArray_(
     payload.ticket_drive_urls || payload.ticketUrls || payload.ticket_drive_url
   );
-  if (!ticketUrlsArr.length) {
-    throw new Error("Falta campo: ticket_drive_urls (OBLIGATORIO)");
-  }
   var ticketFileNamesArr = normalizeMultiArray_(
     payload.ticket_drive_file_names || payload.ticketFileNames || payload.ticket_drive_file_name
   );

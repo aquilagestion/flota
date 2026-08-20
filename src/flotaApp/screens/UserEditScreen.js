@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
-import { ROLES, isAdministracion, isGestor, normalizeRole } from "../auth/roles";
+import { assignableRoleOptions, isAdministracion, isGestor, normalizeRole, ROLES } from "../auth/roles";
 import { sheetsApi } from "../api/sheetsApi";
 import { theme } from "../ui/theme";
 import { SelectField, TextField } from "../ui/form/Fields";
@@ -31,7 +31,7 @@ export default function UserEditScreen({ navigation, route }) {
   const [item, setItem] = useState({
     email: String(initial.email || "").trim().toLowerCase(),
     nombre: String(initial.nombre || "").trim(),
-    rol: normalizeRole(initial.rol || initial.role || ROLES.OPERARIO),
+    rol: normalizeRole(initial.rol || initial.role || ROLES.USUARIO),
     activo: normalizeActive_(initial.activo ?? "SI"),
     telefono: String(initial.telefono || "").trim(),
     fecha_alta: String(initial.fecha_alta || "").trim(),
@@ -81,14 +81,7 @@ export default function UserEditScreen({ navigation, route }) {
           label="Rol"
           value={item.rol}
           onChange={(v) => setItem((p) => ({ ...p, rol: normalizeRole(v) }))}
-          options={[
-            { value: ROLES.USUARIO, label: ROLES.USUARIO },
-            { value: ROLES.GESTOR, label: ROLES.GESTOR },
-            { value: ROLES.ADMINISTRACION, label: ROLES.ADMINISTRACION },
-            { value: ROLES.RESPONSABLE, label: ROLES.RESPONSABLE },
-            { value: ROLES.COLABORADOR, label: ROLES.COLABORADOR },
-            { value: ROLES.OPERARIO, label: ROLES.OPERARIO },
-          ]}
+          options={assignableRoleOptions()}
         />
         <SelectField
           label="Activo"

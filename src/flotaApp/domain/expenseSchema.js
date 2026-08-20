@@ -8,8 +8,11 @@ export const EXPENSE_TYPES = [
   { value: "COMBUSTIBLES", label: "COMBUSTIBLES" },
   { value: "PARKING", label: "PARKING" },
   { value: "PEAJES", label: "PEAJES" },
+  { value: "GASTOS_BILLETES", label: "GASTOS BILLETES" },
   { value: "ITV", label: "ITV" },
   { value: "MULTAS_SANCIONES", label: "MULTAS / SANCIONES" },
+  { value: "HOSPEDAJE", label: "HOSPEDAJE" },
+  { value: "MANUTENCION", label: "MANUTENCIÓN" },
   { value: "OTROS", label: "OTROS" },
 ];
 
@@ -47,4 +50,6 @@ export const FUEL_TYPES = ["GASOLEO", "GASOLEO MEJORADO", "GASOLINA 95", "GASOLI
 export const PARKING_ZONES = ["AZUL", "VERDE", "NARANJA", "ROJA", "PARKING PRIVADO"];
 
 export const PAYMENT_METHODS = ["Usuario", "Transferencia", "Tarjeta Grefa"];
+
+export { IVA_RATE_OPTIONS } from "../lib/expenseIva";
 

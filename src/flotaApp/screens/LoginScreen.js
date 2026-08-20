@@ -1,9 +1,13 @@
 import React, { useContext, useMemo, useState } from "react";
-import { Alert, BackHandler, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, BackHandler, Image, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { AuthContext } from "../auth/AuthContext";
-import { ROLES } from "../auth/roles";
+import { ROLES, registrationRoleOptions } from "../auth/roles";
 import { theme } from "../ui/theme";
+import { APP_BRAND, isUsoRuntime } from "../config/appMode";
 import { SelectField, TextField } from "../ui/form/Fields";
+
+/** Escala del menú de identificación: +100% (doble) proporcional. */
+const ID_SCALE = 2;
 
 export default function LoginScreen() {
   const { login, register } = useContext(AuthContext);
@@ -23,6 +27,28 @@ export default function LoginScreen() {
   const title = useMemo(() => (mode === "login" ? "Acceso" : "Crear cuenta"), [mode]);
 
   const exitApp = () => {
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const ok =
+        typeof window.confirm === "function" ? window.confirm("¿Quieres salir?") : true;
+      if (!ok) return;
+      try {
+        window.open("", "_self");
+        window.close();
+      } catch {
+        // ignore
+      }
+      // Muchos navegadores bloquean window.close(); forzar salida de la app.
+      try {
+        window.location.replace("about:blank");
+      } catch {
+        try {
+          window.location.href = "about:blank";
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
     Alert.alert("Salir", "¿Quieres cerrar la aplicación?", [
       { text: "Cancelar", style: "cancel" },
       { text: "Salir", style: "destructive", onPress: () => BackHandler.exitApp() },
@@ -83,29 +109,24 @@ export default function LoginScreen() {
         <Image source={require("../../../assets/logo-grefa-45.png")} style={styles.logo} resizeMode="contain" />
       </View>
       <View style={styles.card}>
-        <Text style={styles.title}>FLOTA</Text>
-        <Text style={styles.subtitle}>{title}</Text>
+        <Text style={styles.title}>{APP_BRAND}</Text>
+        <Text style={styles.subtitle}>{isUsoRuntime() ? "Solicitudes, calendario y liberaciones" : title}</Text>
         {mode === "register" ? (
           <>
-            <TextField label="Nombre completo" required value={fullName} onChangeText={setFullName} placeholder="Nombre y apellidos" />
+            <TextField textScale={ID_SCALE} label="Nombre completo" required value={fullName} onChangeText={setFullName} placeholder="Nombre y apellidos" />
             <SelectField
+              textScale={ID_SCALE}
               label="Rol solicitado"
               required
               value={requestedRole}
               onChange={(v) => setRequestedRole(v)}
-              options={[
-                { value: ROLES.COLABORADOR, label: "COLABORADOR" },
-                { value: ROLES.OPERARIO, label: "OPERARIO" },
-                { value: ROLES.RESPONSABLE, label: "RESPONSABLE (requiere aprobación de GESTOR/ADMINISTRACION)" },
-                { value: ROLES.GESTOR, label: "GESTOR (requiere aprobación de ADMINISTRACION)" },
-                { value: ROLES.ADMINISTRACION, label: "ADMINISTRACION (requiere aprobación de ADMINISTRACION)" },
-              ]}
+              options={registrationRoleOptions()}
             />
             {requestedRole === ROLES.COLABORADOR ? (
               <>
-                <TextField label="Teléfono" required={false} value={telefono} onChangeText={setTelefono} placeholder="Teléfono" />
-                <TextField label="NIF" required={false} value={nif} onChangeText={setNif} placeholder="NIF" />
-                <TextField label="IBAN" required={false} value={iban} onChangeText={setIban} placeholder="IBAN" />
+                <TextField textScale={ID_SCALE} label="Teléfono" required={false} value={telefono} onChangeText={setTelefono} placeholder="Teléfono" />
+                <TextField textScale={ID_SCALE} label="NIF" required={false} value={nif} onChangeText={setNif} placeholder="NIF" />
+                <TextField textScale={ID_SCALE} label="IBAN" required={false} value={iban} onChangeText={setIban} placeholder="IBAN" />
               </>
             ) : null}
           </>
@@ -123,7 +144,7 @@ export default function LoginScreen() {
 
         <View style={styles.passwordRow}>
           <TextInput
-            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            style={[styles.input, { flex: 1, marginBottom: 0, minWidth: 0 }]}
             secureTextEntry={!showPwd}
             placeholder="Contraseña"
             placeholderTextColor={theme.colors.placeholder}
@@ -136,9 +157,9 @@ export default function LoginScreen() {
         </View>
 
         {mode === "register" ? (
-          <View style={[styles.passwordRow, { marginTop: 10 }]}>
+          <View style={[styles.passwordRow, { marginTop: 10 * ID_SCALE }]}>
             <TextInput
-              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              style={[styles.input, { flex: 1, marginBottom: 0, minWidth: 0 }]}
               secureTextEntry={!showPwd2}
               placeholder="Confirmar contraseña"
               placeholderTextColor={theme.colors.placeholder}
@@ -172,50 +193,84 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "flex-start", padding: 16, paddingTop: 28 },
-  logoWrap: { width: "100%", alignItems: "center", marginBottom: 10 },
-  logo: { width: 92, height: 92, borderRadius: 18, backgroundColor: "#ffffff" },
+  safe: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    padding: 16 * ID_SCALE,
+    paddingTop: 28 * ID_SCALE,
+  },
+  logoWrap: { width: "100%", alignItems: "center", marginBottom: 10 * ID_SCALE },
+  logo: {
+    width: 92 * ID_SCALE,
+    height: 92 * ID_SCALE,
+    borderRadius: 18 * ID_SCALE,
+    backgroundColor: "#ffffff",
+  },
   card: {
     width: "100%",
-    maxWidth: 440,
+    maxWidth: Math.round(440 * ID_SCALE * 1.15),
     backgroundColor: theme.colors.card,
-    borderRadius: 14,
+    borderRadius: 14 * ID_SCALE,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    padding: 16,
+    padding: 16 * ID_SCALE,
   },
-  title: { color: theme.colors.text, fontSize: 28, fontWeight: "900", textAlign: "center" },
-  subtitle: { color: theme.colors.subtext, textAlign: "center", marginTop: 6, marginBottom: 12 },
+  title: { color: theme.colors.text, fontSize: 28 * ID_SCALE, fontWeight: "900", textAlign: "center" },
+  subtitle: {
+    color: theme.colors.subtext,
+    textAlign: "center",
+    marginTop: 6 * ID_SCALE,
+    marginBottom: 12 * ID_SCALE,
+    fontSize: (Platform.OS === "web" ? 14 : 13) * ID_SCALE,
+  },
   input: {
     backgroundColor: theme.colors.input,
-    borderRadius: 10,
+    borderRadius: 10 * ID_SCALE,
     borderWidth: 1,
     borderColor: theme.colors.border,
     color: theme.colors.text,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
+    paddingHorizontal: 12 * ID_SCALE,
+    paddingVertical: 10 * ID_SCALE,
+    marginBottom: 10 * ID_SCALE,
+    fontSize: 16 * ID_SCALE,
+    minWidth: 0,
   },
   passwordRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 8 * ID_SCALE,
+    width: "100%",
+    flexWrap: "nowrap",
   },
   eyeBtn: {
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.card2,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderRadius: 10 * ID_SCALE,
+    paddingHorizontal: 10 * ID_SCALE,
+    paddingVertical: 10 * ID_SCALE,
+    flexShrink: 0,
   },
-  eyeText: { color: "#b7ddff", fontWeight: "700" },
-  button: { backgroundColor: theme.colors.primary, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
+  eyeText: { color: "#b7ddff", fontWeight: "700", fontSize: 14 * ID_SCALE },
+  button: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: 10 * ID_SCALE,
+    paddingVertical: 12 * ID_SCALE,
+    alignItems: "center",
+  },
   buttonDisabled: { opacity: 0.7 },
-  buttonText: { color: theme.colors.text, fontWeight: "800" },
-  link: { marginTop: 12, alignItems: "center" },
-  linkText: { color: "#b7ddff", fontWeight: "700" },
-  exitBtn: { marginTop: 12, alignItems: "center", borderWidth: 1, borderColor: "#c96e6e", borderRadius: 8, paddingVertical: 8 },
-  exitText: { color: "#ffb6b6", fontWeight: "700" },
+  buttonText: { color: theme.colors.text, fontWeight: "800", fontSize: 16 * ID_SCALE },
+  link: { marginTop: 12 * ID_SCALE, alignItems: "center" },
+  linkText: { color: "#b7ddff", fontWeight: "700", fontSize: 14 * ID_SCALE },
+  exitBtn: {
+    marginTop: 12 * ID_SCALE,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#c96e6e",
+    borderRadius: 8 * ID_SCALE,
+    paddingVertical: 8 * ID_SCALE,
+  },
+  exitText: { color: "#ffb6b6", fontWeight: "700", fontSize: 14 * ID_SCALE },
 });
-

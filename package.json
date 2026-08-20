@@ -1,6 +1,6 @@
 {
   "name": "app",
-  "version": "1.0.24",
+  "version": "1.2.90",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -12,8 +12,13 @@
     "sync:help-version": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-app-versions-from-app-json.ps1 -Root .",
     "bundle:prepare": "npm run sync:app-versions",
     "bundle:local": "build-apk.bat",
-    "bundle:git": "bundle-and-git.bat",
+    "bundle:local:uso": "build-apk-uso.bat",
+    "web:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/web-build-full.ps1",
+    "web:deploy": "npm run web:build && npx firebase deploy --only hosting:gestiflota --project gestiflota",
+    "web:build:uso": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/web-build-uso.ps1",
+    "web:deploy:uso": "npm run web:build:uso && npx firebase deploy --only hosting:gestiflota-uso --project gestiflota",
     "build:apk": "eas build -p android --profile preview",
+    "build:apk:uso": "eas build -p android --profile preview-uso",
     "build:aab": "eas build -p android --profile production"
   },
   "dependencies": {
@@ -23,22 +28,31 @@
     "@react-navigation/native": "^7.2.0",
     "@react-navigation/native-stack": "^7.14.7",
     "expo": "~55.0.8",
+    "expo-application": "~55.0.8",
+    "expo-document-picker": "~55.0.15",
     "expo-file-system": "^55.0.11",
     "expo-image-manipulator": "~55.0.0",
     "expo-image-picker": "^55.0.13",
+    "expo-intent-launcher": "~55.0.8",
     "expo-print": "^55.0.9",
     "expo-secure-store": "^55.0.9",
     "expo-sharing": "^55.0.14",
+    "expo-speech": "~55.0.16",
+    "expo-speech-recognition": "^56.0.1",
     "expo-status-bar": "~55.0.4",
     "firebase": "^12.11.0",
+    "pdf-lib": "^1.17.1",
     "react": "19.2.0",
+    "react-dom": "19.2.0",
     "react-native": "0.83.2",
     "react-native-safe-area-context": "^5.7.0",
-    "react-native-screens": "^4.24.0"
+    "react-native-screens": "^4.24.0",
+    "react-native-web": "^0.21.0"
   },
   "private": true,
   "devDependencies": {
     "eas-cli": "^18.4.0",
+    "firebase-tools": "^15.23.0",
     "patch-package": "^8.0.1"
   }
 }

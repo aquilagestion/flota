@@ -3,6 +3,8 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View
 import { AuthContext } from "../auth/AuthContext";
 import { localDb } from "../storage/localDb";
 import { syncService } from "../sync/syncService";
+import { buildDepartmentProjectSelectOptions } from "../../flotaWeb/lib/departmentProjectSelectOptions";
+import { loadProjectSelectOptions } from "../../flotaWeb/lib/proyectoResolve";
 import { theme } from "../ui/theme";
 import { DateField, SelectField, TextField } from "../ui/form/Fields";
 import ImageField from "../ui/form/ImageField";
@@ -37,55 +39,7 @@ const initial = {
 };
 
 const OTRO_DEPARTAMENTO = "__OTRO__";
-const DEPARTAMENTOS_O_PROYECTOS = [
-  { value: "Life Pygargus", label: "Life Pygargus" },
-  { value: "Life Rhodopes", label: "Life Rhodopes" },
-  { value: "Life Abilas", label: "Life Abilas" },
-  { value: "Topillos", label: "Topillos" },
-  { value: "Perdicera Guara", label: "Perdicera Guara" },
-  { value: "Veterinarios", label: "Veterinarios" },
-  { value: "Veterinarios Campo", label: "Veterinarios Campo" },
-  { value: "Perdiceras Madrid", label: "Perdiceras Madrid" },
-  { value: "Monachus Demanda", label: "Monachus Demanda" },
-  { value: "Generales", label: "Generales" },
-  { value: "CE Villalar", label: "CE Villalar" },
-  { value: "Rescate", label: "Rescate" },
-  { value: "Post Aquila-Perdiceras", label: "Post Aquila-Perdiceras" },
-  { value: "Pigargos", label: "Pigargos" },
-  { value: "Biodiversidad Urbana", label: "Biodiversidad Urbana" },
-  { value: "Primillas", label: "Primillas" },
-  { value: "Cigueñas Alcalá", label: "Cigueñas Alcalá" },
-  { value: "No imputable", label: "No imputable" },
-  { value: OTRO_DEPARTAMENTO, label: "Añadir otro (escribir)" },
-];
-
-const DEPARTAMENTOS_O_PROYECTOS_VALID = new Set(DEPARTAMENTOS_O_PROYECTOS.map((o) => o.value));
 const OTRO_TIPO = "__OTRO_TIPO__";
-
-function mapProjectOptions_(rows) {
-  const list = Array.isArray(rows) ? rows : [];
-  const out = [];
-  for (const r of list) {
-    const entries = Object.entries(r || {});
-    const values = entries.map(([, v]) => String(v || "").trim());
-    const colB = values.length >= 2 ? values[1] : "";
-    const value = String(r?.id_proyecto || r?.id || (values.length ? values[0] : "")).trim();
-    const label = String(r?.nombre_proyecto || r?.nombre || r?.proyecto || colB).trim();
-    if (!value || !label) continue;
-    if (!out.find((x) => x.value === value)) out.push({ value, label });
-  }
-  return out;
-}
-
-async function loadProjectRows_(email) {
-  try {
-    const res = await sheetsApi.get("proyecto_list_columna_b", { solo_activos: "SI", user_email: email || "" });
-    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-  } catch {
-    const res = await sheetsApi.get("proyecto_list", { solo_activos: "SI", user_email: email || "" });
-    return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-  }
-}
 
 function normalizeCatalogKey_(s) {
   return String(s || "")
@@ -211,24 +165,10 @@ export default function MaintenanceFormScreen({ navigation }) {
   const [saving, setSaving] = useState(false);
   const [readingKm, setReadingKm] = useState(false);
   const [lastOcrUri, setLastOcrUri] = useState("");
-  const departmentProjectOptions = useMemo(() => {
-    const out = [];
-    const seen = new Set();
-    const add = (opt) => {
-      const value = String(opt?.value || "").trim();
-      const label = String(opt?.label || "").trim();
-      if (!value || !label || seen.has(value)) return;
-      seen.add(value);
-      out.push({ value, label });
-    };
-    for (const p of projectOptions) add(p);
-    for (const d of DEPARTAMENTOS_O_PROYECTOS) {
-      if (String(d?.value || "") === OTRO_DEPARTAMENTO) continue;
-      add(d);
-    }
-    add({ value: OTRO_DEPARTAMENTO, label: "Añadir otro (escribir)" });
-    return out;
-  }, [projectOptions]);
+  const departmentProjectOptions = useMemo(
+    () => buildDepartmentProjectSelectOptions(projectOptions),
+    [projectOptions]
+  );
   const departmentProjectValues = useMemo(
     () => new Set(departmentProjectOptions.map((o) => String(o?.value || "").trim())),
     [departmentProjectOptions]
@@ -266,10 +206,19 @@ export default function MaintenanceFormScreen({ navigation }) {
         // fallback local
       }
       try {
-        const rows = await loadProjectRows_(user?.email || "");
-        setProjectOptions(mapProjectOptions_(rows));
+        const cached = await localDb.getProjectSelectOptions(user?.email || "");
+        if (cached.length) setProjectOptions(cached);
+        const opts = await loadProjectSelectOptions(
+          (action, params) => sheetsApi.get(action, params, { timeoutMs: 45000 }),
+          user?.email || "",
+          {
+            readCache: (e) => localDb.getProjectSelectOptions(e),
+            writeCache: (e, list) => localDb.setProjectSelectOptions(e, list),
+          }
+        );
+        setProjectOptions(opts);
       } catch {
-        setProjectOptions([]);
+        // mantener caché si ya se cargó
       }
     }
     loadVehicles();

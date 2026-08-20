@@ -16,7 +16,7 @@ function apiHojasGastoList(payload) {
   if (!user) throw new Error("Falta user_email");
   var rol = getRolUsuarioHojas_(user);
   if (!rol) throw new Error("Usuario no encontrado o sin rol en USUARIOS");
-  if (rol !== "GESTOR" && rol !== "ADMINISTRACION" && rol !== "RESPONSABLE" && rol !== "OPERARIO") {
+  if (!puedeVerHojaGasto_(rol)) {
     throw new Error("Permisos insuficientes para listar hojas de gasto");
   }
 
@@ -29,7 +29,7 @@ function apiHojasGastoList(payload) {
   if (lastCol < 1 || lastRow < 2) return [];
 
   var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-  var rows = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var rows = sh.getRange(2, 1, lastRow, lastCol).getValues();
 
   var idx = {};
   for (var c = 0; c < headers.length; c++) idx[String(headers[c] || "").trim()] = c;
@@ -59,6 +59,8 @@ function apiHojasGastoList(payload) {
   var cRefPago = col("hoja_gasto_referencia_pago");
   var cEmail = col("responsable_email");
   var cMat = col("matricula");
+  var cExcelNombre = col("excel_trabajador_nombre");
+  var cNumHojaRow = col("Num_Hoja_Gasto");
 
   var grouped = {};
   for (var r = 0; r < rows.length; r++) {
@@ -67,12 +69,20 @@ function apiHojasGastoList(payload) {
     if (!hojaId) continue;
     if (!grouped[hojaId]) {
       var email = String(val(row, cEmail) || "").trim().toLowerCase();
-      var nombre = "";
-      try {
-        var u = apiUsuarioGet({ email: email });
-        nombre = String((u && u.nombre) || "").trim();
-      } catch (_) {
-        nombre = "";
+      var excelNombre = String(val(row, cExcelNombre) || "").trim();
+      var numHojaRow = String(val(row, cNumHojaRow) || "").trim();
+      var nombre = hgResolveHojaGastoDisplayNombre_({
+        excel_trabajador_nombre: excelNombre,
+        num_hoja_gasto: numHojaRow,
+        usuario_email: email,
+      });
+      if (!nombre) {
+        try {
+          var u = apiUsuarioGet({ email: email });
+          nombre = String((u && u.nombre) || "").trim();
+        } catch (_) {
+          nombre = "";
+        }
       }
       grouped[hojaId] = {
         hoja_gasto_id: hojaId,
@@ -80,15 +90,15 @@ function apiHojasGastoList(payload) {
         usuario_email: email,
         usuario_nombre: nombre,
         hoja_gasto_estado: String(val(row, cEstado) || "ENVIADA").trim().toUpperCase(),
-        hoja_gasto_fecha_envio: String(val(row, cFecha) || "").trim(),
+        hoja_gasto_fecha_envio: normalizeDateDMYCell_(val(row, cFecha) || ""),
         hoja_gasto_total: Number(val(row, cTotal) || 0) || 0,
         hoja_gasto_observaciones: String(val(row, cObs) || "").trim(),
         hoja_gasto_revisado_por: String(val(row, cRevPor) || "").trim().toLowerCase(),
-        hoja_gasto_fecha_revision: String(val(row, cRevFecha) || "").trim(),
+        hoja_gasto_fecha_revision: normalizeDateDMYCell_(val(row, cRevFecha) || ""),
         hoja_gasto_motivo_rechazo: String(val(row, cRevMotivo) || "").trim(),
         hoja_gasto_estado_pago: String(val(row, cEstadoPago) || "PAGO_PENDIENTE").trim().toUpperCase(),
         hoja_gasto_pagado_por: String(val(row, cPagadoPor) || "").trim().toLowerCase(),
-        hoja_gasto_fecha_pago: String(val(row, cFechaPago) || "").trim(),
+        hoja_gasto_fecha_pago: normalizeDateDMYCell_(val(row, cFechaPago) || ""),
         hoja_gasto_metodo_pago: String(val(row, cMetodoPago) || "").trim(),
         hoja_gasto_referencia_pago: String(val(row, cRefPago) || "").trim(),
         lineas_count: 0,
@@ -104,6 +114,10 @@ function apiHojasGastoList(payload) {
     return grouped[k];
   });
   out.sort(function(a, b) {
+    var na = String(a.num_hoja_gasto || a.hoja_gasto_id || "").trim();
+    var nb = String(b.num_hoja_gasto || b.hoja_gasto_id || "").trim();
+    var byName = nb.localeCompare(na);
+    if (byName !== 0) return byName;
     return String(b.hoja_gasto_fecha_envio || "").localeCompare(String(a.hoja_gasto_fecha_envio || ""));
   });
 
@@ -118,13 +132,21 @@ function apiHojasGastoList(payload) {
   }
 
   if (rol === "GESTOR" || rol === "ADMINISTRACION") {
-    return out.map(stripInternal_);
+    return out.map(function(item) {
+      var stripped = stripInternal_(item);
+      stripped.puede_revisar = true;
+      return stripped;
+    });
   }
 
   return out
     .filter(function(item) {
       return puedeVerHojaGastoResumen_(user, rol, item.usuario_email || "", item._matriculas || {});
     })
-    .map(stripInternal_);
+    .map(function(item) {
+      var stripped = stripInternal_(item);
+      stripped.puede_revisar = puedeRevisarHojaGasto_(user, item.usuario_email || "", item._matriculas || {});
+      return stripped;
+    });
 }
 

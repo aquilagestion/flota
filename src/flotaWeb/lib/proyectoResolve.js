@@ -66,30 +66,77 @@ export function departamentoSelectFromProyectoNombre(proyectoNombre, projectOpti
   const proj = (Array.isArray(projectOptions) ? projectOptions : []).find(
     (o) => norm(o?.label) === target || norm(o?.value) === target
   );
-  if (proj) return { value: String(proj.value || "").trim(), custom: "" };
+  if (proj) return { value: String(proj.label || proj.value || "").trim(), custom: "" };
   const dept = (Array.isArray(deptOptions) ? deptOptions : []).find(
     (o) => norm(o?.label) === target || norm(o?.value) === target
   );
-  if (dept) return { value: String(dept.value || "").trim(), custom: "" };
+  if (dept) return { value: String(dept.label || dept.value || "").trim(), custom: "" };
   return { value: "__OTRO__", custom: name };
 }
 
 export async function fetchProyectoRowsColumnaB(apiGet, email, opts = {}) {
   const user_email = String(email || "").trim().toLowerCase();
-  if (!user_email || typeof apiGet !== "function") return [];
+  if (typeof apiGet !== "function") return [];
+  const apiParams = {
+    solo_activos: String(opts.solo_activos || "NO"),
+    ...(user_email ? { user_email } : {}),
+  };
   try {
-    const res = await apiGet("proyecto_list_columna_b", { solo_activos: "NO", user_email, ...opts });
+    const res = await apiGet("proyecto_list_columna_b", apiParams);
     const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
     if (rows.length) return rows;
   } catch {
     // fallback legacy
   }
   try {
-    const res = await apiGet("proyecto_list", { solo_activos: "NO", user_email, ...opts });
+    const res = await apiGet("proyecto_list", apiParams);
     return Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
   } catch {
     return [];
   }
+}
+
+/** Caché de sesión (~10 min) para no bloquear cada PDF con proyecto_list. */
+let proyectoRowsCache_ = { at: 0, email: "", rows: null };
+const PROYECTO_ROWS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+export async function fetchProyectoRowsColumnaBCached(apiGet, email, opts = {}) {
+  const user_email = String(email || "").trim().toLowerCase();
+  const now = Date.now();
+  if (
+    !opts.force &&
+    Array.isArray(proyectoRowsCache_.rows) &&
+    proyectoRowsCache_.rows.length &&
+    proyectoRowsCache_.email === user_email &&
+    now - proyectoRowsCache_.at < PROYECTO_ROWS_CACHE_TTL_MS
+  ) {
+    return proyectoRowsCache_.rows;
+  }
+  const rows = await fetchProyectoRowsColumnaB(apiGet, email, opts);
+  if (rows.length) {
+    proyectoRowsCache_ = { at: now, email: user_email, rows };
+  }
+  return rows;
+}
+
+/** True si alguna línea aún parece id de proyecto y conviene el mapa PROYECTOS. */
+export function linesNeedProyectoMapResolve_(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  for (const ln of list) {
+    const label = String(
+      ln?.proyecto || ln?.proyecto_nombre || ln?.departamento_o_proyecto || ""
+    ).trim();
+    if (!label || label === "__OTRO__") {
+      const id = String(ln?.id_proyecto || ln?.proyecto_colaborador_id || "").trim();
+      if (id) return true;
+      continue;
+    }
+    // Ids típicos (sin espacios, cortos o con prefijo) → resolver a nombre columna B.
+    if (/^(PROJ|PRY|P)-/i.test(label) || (/^[A-Z0-9_-]{2,24}$/i.test(label) && !/\s/.test(label) && label.length <= 16)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isProyectoActivo_(activo) {
@@ -99,6 +146,7 @@ function isProyectoActivo_(activo) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
   if (!s) return true;
+  if (s === "SI" || s === "S" || s === "TRUE" || s === "1" || s === "YES" || s === "Y") return true;
   return !(s === "NO" || s === "N" || s === "0" || s === "FALSE" || s === "INACTIVO");
 }
 
@@ -144,28 +192,34 @@ export function mapProjectSelectOptions(rows, opts = {}) {
 /** Carga PROYECTOS (columna B) con la misma API que Grabar gasto. Usa caché opcional si falla la red. */
 export async function loadProjectSelectOptions(apiGet, email, opts = {}) {
   const user_email = String(email || "").trim().toLowerCase();
+  const { readCache, writeCache, onCacheHit, includeInactive, solo_activos, ...rest } = opts || {};
+  void rest;
   let cached = [];
-  if (typeof opts.readCache === "function" && user_email) {
+  if (typeof readCache === "function" && user_email) {
     try {
-      cached = await opts.readCache(user_email);
-      if (Array.isArray(cached) && cached.length && typeof opts.onCacheHit === "function") {
-        opts.onCacheHit(cached);
+      cached = await readCache(user_email);
+      if (Array.isArray(cached) && cached.length && typeof onCacheHit === "function") {
+        onCacheHit(cached);
       }
     } catch {
       cached = [];
     }
   }
   try {
-    const rows = await fetchProyectoRowsColumnaB(apiGet, email, opts);
-    const options = mapProjectSelectOptions(rows, { includeInactive: true, ...opts });
-    if (options.length && typeof opts.writeCache === "function" && user_email) {
+    const rows = await fetchProyectoRowsColumnaB(apiGet, email, { solo_activos: solo_activos || "NO" });
+    const options = mapProjectSelectOptions(rows, {
+      includeInactive: includeInactive !== false,
+    });
+    if (options.length && typeof writeCache === "function" && user_email) {
       try {
-        await opts.writeCache(user_email, options);
+        await writeCache(user_email, options);
       } catch {
         // noop
       }
     }
-    return options;
+    if (options.length) return options;
+    if (cached.length) return cached;
+    return [];
   } catch (err) {
     if (cached.length) return cached;
     throw err;

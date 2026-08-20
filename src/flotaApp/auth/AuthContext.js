@@ -14,7 +14,10 @@ import {
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { firebaseAvailable, firebaseAuth, firestore } from "../firebase/firebase";
 import { sheetsApi } from "../api/sheetsApi";
-import { normalizeRole, ROLES } from "./roles";
+import { normalizeRole, preferHigherRole, roleRank, ROLES } from "./roles";
+import { resetLocalFromSheet_ } from "../lib/localExpenseReconcile";
+import { syncService } from "../sync/syncService";
+import { localDb } from "../storage/localDb";
 
 const ROLE_KEY = "flota.role";
 const LOCAL_USER_KEY = "@flota:localUser:v1";
@@ -23,7 +26,13 @@ export const AuthContext = createContext(null);
 
 async function loadCachedRole() {
   try {
-    return await SecureStore.getItemAsync(ROLE_KEY);
+    const fromSecure = await SecureStore.getItemAsync(ROLE_KEY);
+    if (fromSecure) return fromSecure;
+  } catch {
+    // SecureStore no disponible (p. ej. web)
+  }
+  try {
+    return await AsyncStorage.getItem(ROLE_KEY);
   } catch {
     return null;
   }
@@ -33,9 +42,18 @@ async function saveCachedRole(role) {
   try {
     if (!role) {
       await SecureStore.deleteItemAsync(ROLE_KEY);
-      return;
+    } else {
+      await SecureStore.setItemAsync(ROLE_KEY, role);
     }
-    await SecureStore.setItemAsync(ROLE_KEY, role);
+  } catch {
+    // SecureStore no disponible (p. ej. web)
+  }
+  try {
+    if (!role) {
+      await AsyncStorage.removeItem(ROLE_KEY);
+    } else {
+      await AsyncStorage.setItem(ROLE_KEY, role);
+    }
   } catch {
     // silent
   }
@@ -47,20 +65,42 @@ async function fetchUserRole(uid) {
   return snap.exists() ? snap.data()?.role || null : null;
 }
 
+function pickFieldCI_(raw, names) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const map = {};
+  for (const k of Object.keys(raw)) {
+    map[String(k).trim().toLowerCase()] = raw[k];
+  }
+  for (const name of names) {
+    const key = String(name).trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(map, key)) return map[key];
+  }
+  return undefined;
+}
+
 function parseUserRow_(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const email = String(raw.email || raw.user_email || "").trim().toLowerCase();
+  const email = String(pickFieldCI_(raw, ["email", "user_email"]) || "").trim().toLowerCase();
   if (!email) return null;
-  const role = normalizeRole(raw.rol || raw.role || ROLES.OPERARIO);
-  const activoRaw = String(raw.activo ?? "SI")
+  // Puede haber "Rol" (GESTOR) y "rol" (USUARIO erróneo del API antiguo): elegir el de mayor privilegio.
+  const roleCandidates = [];
+  for (const k of Object.keys(raw)) {
+    const lk = String(k).trim().toLowerCase();
+    if (lk === "rol" || lk === "role") roleCandidates.push(normalizeRole(raw[k]));
+  }
+  let role = preferHigherRole(...roleCandidates);
+  if (!roleCandidates.length) role = normalizeRole(ROLES.USUARIO);
+  const activoRaw = String(pickFieldCI_(raw, ["activo"]) ?? "SI")
     .trim()
     .toUpperCase();
   const activo = activoRaw === "SI" || activoRaw === "TRUE" || activoRaw === "1";
-  const nombre = String(raw.nombre || "").trim();
-  const pwd = String(raw.pwd || raw.password || "").trim();
-  const telefono = String(raw.telefono || "").trim();
-  const fecha_alta = String(raw.fecha_alta || "").trim();
-  return { email, role, activo, nombre, pwd, telefono, fecha_alta };
+  const nombre = String(pickFieldCI_(raw, ["nombre", "name"]) || "").trim();
+  const pwd = String(pickFieldCI_(raw, ["pwd", "password"]) || "").trim();
+  const telefono = String(pickFieldCI_(raw, ["telefono", "tel", "phone"]) || "").trim();
+  const fecha_alta = String(pickFieldCI_(raw, ["fecha_alta", "fecha alta"]) || "").trim();
+  const nif = String(pickFieldCI_(raw, ["nif"]) || "").trim();
+  const iban = String(pickFieldCI_(raw, ["iban"]) || "").trim();
+  return { email, role, activo, nombre, pwd, telefono, fecha_alta, nif, iban };
 }
 
 function parseColaboradorRow_(raw) {
@@ -150,10 +190,11 @@ async function authenticateWithUsersSheet_(email, password) {
   if (String(password || "") !== pwdInSheet) {
     throw new Error("Contraseña incorrecta.");
   }
+  const resolved = await resolveEffectiveRoleForEmail_(e, { localRole: fromSheet.role });
   return {
     uid: `local-${e}`,
     email: e,
-    role: normalizeRole(fromSheet?.role || ROLES.OPERARIO),
+    role: resolved.role,
   };
 }
 
@@ -230,7 +271,7 @@ async function updatePasswordInUsersSheet_(email, newPassword, userEmailForMeta)
   const payload = {
     email: e,
     nombre: String(existing.nombre || "").trim(),
-    rol: normalizeRole(existing.role || ROLES.OPERARIO),
+    rol: normalizeRole(existing.role || ROLES.USUARIO),
     activo: existing.activo ? "SI" : "NO",
     telefono: String(existing.telefono || "").trim(),
     pwd: String(newPassword || ""),
@@ -280,6 +321,53 @@ async function fetchColaboradorByEmail_(email) {
   return null;
 }
 
+function colaboradorActivo_(colab) {
+  const activo = String(colab?.activo ?? "SI")
+    .trim()
+    .toUpperCase();
+  return activo === "SI" || activo === "TRUE" || activo === "1";
+}
+
+/** Rol efectivo: USUARIOS (Sheet) > Firebase > caché > local; enriquece COLABORADOR vía tabla colaboradores. */
+async function resolveEffectiveRoleForEmail_(email, opts = {}) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return { role: ROLES.USUARIO, inactive: false, sheetUser: null };
+
+  const { localRole, cachedRole, remoteRole } = opts;
+  let sheetUser = null;
+  try {
+    sheetUser = await fetchUserFromUsersSheetByEmail_(e);
+  } catch {
+    // sin red o backend no disponible
+  }
+
+  if (sheetUser && !sheetUser.activo) {
+    return { role: null, inactive: true, sheetUser };
+  }
+
+  let role = preferHigherRole(sheetUser?.role, remoteRole, cachedRole, localRole);
+  if (!role || roleRank(role) < 1) role = ROLES.USUARIO;
+
+  if (role === ROLES.USUARIO || role === ROLES.COLABORADOR) {
+    try {
+      const colab = await fetchColaboradorByEmail_(e);
+      if (colab?.email && colaboradorActivo_(colab)) {
+        role = ROLES.COLABORADOR;
+      } else if (role === ROLES.COLABORADOR && !colab) {
+        role = ROLES.USUARIO;
+      }
+    } catch {
+      // mantener rol de USUARIOS
+    }
+  }
+
+  // No degradar GESTOR/ADMIN/RESPONSABLE si Sheet devolvió USUARIO por error de lectura
+  // pero la sesión/caché ya tenían un rol superior.
+  role = preferHigherRole(role, sheetUser?.role, remoteRole, cachedRole, localRole);
+
+  return { role, inactive: false, sheetUser };
+}
+
 async function loadLocalUser_() {
   try {
     const raw = await AsyncStorage.getItem(LOCAL_USER_KEY);
@@ -304,10 +392,43 @@ async function saveLocalUser_(u) {
   }
 }
 
+async function applySheetAsSourceAfterAuth_(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return;
+  try {
+    await resetLocalFromSheet_(e);
+  } catch {
+    // Si falla el pull, se mantiene lo local; el usuario puede sincronizar luego.
+  }
+}
+
+/** Lee usuario cacheado síncronamente de localStorage (web) o devuelve null. */
+function readLocalUserSync_() {
+  try {
+    // En web AsyncStorage usa localStorage internamente y el item está disponible síncronamente.
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(LOCAL_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.email ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [role, setRole] = useState(null);
-  const [booting, setBooting] = useState(true);
+  // Si hay sesión cacheada arrancamos con booting=false para mostrar la app inmediatamente.
+  // Firebase confirmará (o denegará) la sesión en background y actualizará el estado.
+  const hasCachedSession = readLocalUserSync_() !== null;
+  const [user, setUser] = useState(() => {
+    const lu = readLocalUserSync_();
+    return lu ? { uid: lu.uid || "local", email: lu.email } : null;
+  });
+  const [role, setRole] = useState(() => {
+    const lu = readLocalUserSync_();
+    return lu?.role ? lu.role : null;
+  });
+  const [booting, setBooting] = useState(!hasCachedSession);
 
   useEffect(() => {
     if (!firebaseAvailable || !firebaseAuth || !firestore) {
@@ -316,8 +437,12 @@ export function AuthProvider({ children }) {
         const local = await loadLocalUser_();
         if (local?.email) {
           const email = String(local.email || "").trim().toLowerCase();
-          const fromSheet = await fetchUserFromUsersSheetByEmail_(email);
-          if (fromSheet && !fromSheet.activo) {
+          const cached = await loadCachedRole();
+          const resolved = await resolveEffectiveRoleForEmail_(email, {
+            localRole: local.role,
+            cachedRole: cached,
+          });
+          if (resolved.inactive) {
             setUser(null);
             setRole(null);
             await saveLocalUser_(null);
@@ -325,11 +450,12 @@ export function AuthProvider({ children }) {
             setBooting(false);
             return;
           }
-          const effectiveRole = normalizeRole(fromSheet?.role || local.role || ROLES.OPERARIO);
+          const effectiveRole = resolved.role;
           setUser({ uid: local.uid || "local", email });
           setRole(effectiveRole);
           await saveLocalUser_({ uid: local.uid || `local-${email}`, email, role: effectiveRole });
           await saveCachedRole(effectiveRole);
+          await applySheetAsSourceAfterAuth_(email);
         } else {
           setUser(null);
           setRole(null);
@@ -340,18 +466,18 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    let mounted = true;
-    loadCachedRole().then((cached) => {
-      if (mounted && cached) setRole(cached);
-    });
     const unsub = onAuthStateChanged(firebaseAuth, async (u) => {
       setUser(u);
       if (!u) {
         const local = await loadLocalUser_();
         if (local?.email) {
           const email = String(local.email || "").trim().toLowerCase();
-          const fromSheet = await fetchUserFromUsersSheetByEmail_(email);
-          if (fromSheet && !fromSheet.activo) {
+          const cached = await loadCachedRole();
+          const resolved = await resolveEffectiveRoleForEmail_(email, {
+            localRole: local.role,
+            cachedRole: cached,
+          });
+          if (resolved.inactive) {
             setUser(null);
             setRole(null);
             await saveLocalUser_(null);
@@ -359,11 +485,12 @@ export function AuthProvider({ children }) {
             setBooting(false);
             return;
           }
-          const effectiveRole = normalizeRole(fromSheet?.role || local.role || ROLES.OPERARIO);
+          const effectiveRole = resolved.role;
           setUser({ uid: local.uid || `local-${email}`, email });
           setRole(effectiveRole);
           await saveLocalUser_({ uid: local.uid || `local-${email}`, email, role: effectiveRole });
           await saveCachedRole(effectiveRole);
+          await applySheetAsSourceAfterAuth_(email);
           setBooting(false);
           return;
         }
@@ -376,8 +503,18 @@ export function AuthProvider({ children }) {
       }
       try {
         await saveLocalUser_(null);
-        const sheetUser = await fetchUserFromUsersSheetByEmail_(u.email || "");
-        if (sheetUser && !sheetUser.activo) {
+        const cached = await loadCachedRole();
+        let remoteRole = null;
+        try {
+          remoteRole = await fetchUserRole(u.uid);
+        } catch {
+          // Firestore no disponible
+        }
+        const resolved = await resolveEffectiveRoleForEmail_(u.email || "", {
+          cachedRole: cached,
+          remoteRole,
+        });
+        if (resolved.inactive) {
           await signOut(firebaseAuth);
           setRole(null);
           await saveCachedRole(null);
@@ -385,30 +522,32 @@ export function AuthProvider({ children }) {
           return;
         }
 
-        const remoteRole = await fetchUserRole(u.uid);
-        const effectiveRole = normalizeRole(sheetUser?.role || remoteRole || ROLES.OPERARIO);
-        if (remoteRole) {
-          setRole(effectiveRole);
-          await saveCachedRole(effectiveRole);
-        } else {
-          await setDoc(
-            doc(firestore, "users", u.uid),
-            { email: u.email || "", role: effectiveRole, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
-            { merge: true }
-          );
-          setRole(effectiveRole);
-          await saveCachedRole(effectiveRole);
+        const effectiveRole = resolved.role;
+        setRole(effectiveRole);
+        await saveCachedRole(effectiveRole);
+        if (firestore) {
+          try {
+            await setDoc(
+              doc(firestore, "users", u.uid),
+              { email: u.email || "", role: effectiveRole, updatedAt: serverTimestamp() },
+              { merge: true }
+            );
+          } catch {
+            // silent
+          }
         }
+        await applySheetAsSourceAfterAuth_(u.email || "");
       } catch {
-        // Si falla Firestore/permisos, mantenemos rol operativo por defecto.
-        setRole(ROLES.OPERARIO);
-        await saveCachedRole(ROLES.OPERARIO);
+        const cached = await loadCachedRole();
+        const resolved = await resolveEffectiveRoleForEmail_(u.email || "", { cachedRole: cached });
+        const effectiveRole = resolved.inactive ? ROLES.USUARIO : resolved.role;
+        setRole(effectiveRole);
+        await saveCachedRole(effectiveRole);
       } finally {
         setBooting(false);
       }
     });
     return () => {
-      mounted = false;
       unsub();
     };
   }, []);
@@ -427,10 +566,12 @@ export function AuthProvider({ children }) {
           setRole(localUser.role);
           await saveLocalUser_(localUser);
           await saveCachedRole(localUser.role);
+          await applySheetAsSourceAfterAuth_(localUser.email);
           return;
         }
         try {
           await signInWithEmailAndPassword(firebaseAuth, e, password);
+          // onAuthStateChanged aplicará Sheet como fuente.
           return;
         } catch (firebaseErr) {
           const code = String(firebaseErr?.code || "");
@@ -447,12 +588,13 @@ export function AuthProvider({ children }) {
           setRole(localUser.role);
           await saveLocalUser_(localUser);
           await saveCachedRole(localUser.role);
+          await applySheetAsSourceAfterAuth_(localUser.email);
         }
       },
       async register(email, password, extra = {}) {
         const e = email.trim().toLowerCase();
         const nombre = String(extra?.nombre || "").trim();
-        const roleRequested = normalizeRole(extra?.role || ROLES.OPERARIO);
+        const roleRequested = normalizeRole(extra?.role || ROLES.USUARIO);
         const colaboradorExtra = {
           nombre_colaborador: String(extra?.nombre || "").trim(),
           telefono: String(extra?.telefono || "").trim(),
@@ -470,13 +612,13 @@ export function AuthProvider({ children }) {
             throw new Error("El usuario ya existe. Usa 'Entrar'.");
           }
 
-          // Si pide RESPONSABLE, entra como OPERARIO hasta aprobación de gestor.
+          // Si pide RESPONSABLE, entra como USUARIO hasta aprobación de gestor.
           const effectiveRole =
             roleRequested === ROLES.COLABORADOR
               ? ROLES.COLABORADOR
               : roleRequested === ROLES.RESPONSABLE
-              ? ROLES.OPERARIO
-              : ROLES.OPERARIO;
+              ? ROLES.USUARIO
+              : ROLES.USUARIO;
           try {
             await registerUsuarioPublicoEnSheets_({
               email: e,
@@ -520,6 +662,7 @@ export function AuthProvider({ children }) {
           setRole(localUser.role);
           await saveLocalUser_(localUser);
           await saveCachedRole(localUser.role);
+          await applySheetAsSourceAfterAuth_(e);
           return { requestedRole: roleRequested, requestSent };
         }
         await createUserWithEmailAndPassword(firebaseAuth, e, password);
@@ -530,8 +673,8 @@ export function AuthProvider({ children }) {
             roleRequested === ROLES.COLABORADOR
               ? ROLES.COLABORADOR
               : roleRequested === ROLES.RESPONSABLE
-              ? ROLES.OPERARIO
-              : ROLES.OPERARIO;
+              ? ROLES.USUARIO
+              : ROLES.USUARIO;
         try {
           await upsertUsuarioEnSheets_(
             {
@@ -584,7 +727,34 @@ export function AuthProvider({ children }) {
         }
         return { requestedRole: roleRequested, requestSent };
       },
-      async logout() {
+      async logout(opts = {}) {
+        const force = !!opts?.force;
+        if (!force) {
+          try {
+            const res = await syncService.flushIfOnline();
+            const outbox = await localDb.getOutbox();
+            const pendingKinds = (Array.isArray(outbox) ? outbox : []).filter((j) => {
+              const k = String(j?.kind || "");
+              return k === "expense" || k === "expense_sheet";
+            }).length;
+            const remaining = Math.max(Number(res?.remainingCount || 0) || 0, pendingKinds);
+            if (remaining > 0) {
+              return { ok: false, needsConfirm: true, remaining };
+            }
+          } catch (e) {
+            const outbox = await localDb.getOutbox();
+            const remaining = (Array.isArray(outbox) ? outbox : []).length;
+            if (remaining > 0) {
+              return {
+                ok: false,
+                needsConfirm: true,
+                remaining,
+                syncError: e?.message || "No se pudo sincronizar",
+              };
+            }
+          }
+        }
+
         if (firebaseAvailable && firebaseAuth) {
           try {
             await signOut(firebaseAuth);
@@ -596,15 +766,16 @@ export function AuthProvider({ children }) {
         setRole(null);
         await saveLocalUser_(null);
         await saveCachedRole(null);
+        return { ok: true };
       },
       /** Relee USUARIOS (útil tras aprobación de rol RESPONSABLE sin cerrar sesión). */
       async syncRoleFromUsersSheet() {
         const email = String(user?.email || "").trim().toLowerCase();
         if (!email) return;
         try {
-          const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
-          if (!sheetUser || !sheetUser.activo) return;
-          const next = normalizeRole(sheetUser.role);
+          const resolved = await resolveEffectiveRoleForEmail_(email, { cachedRole: role });
+          if (resolved.inactive || !resolved.role) return;
+          const next = resolved.role;
           if (next === normalizeRole(role)) return;
           setRole(next);
           await saveCachedRole(next);
@@ -664,42 +835,77 @@ export function AuthProvider({ children }) {
       async getColaboradorProfile() {
         const email = String(user?.email || "").trim().toLowerCase();
         if (!email) return null;
-        return fetchColaboradorByEmail_(email);
+        const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
+        let colab = null;
+        try {
+          colab = await fetchColaboradorByEmail_(email);
+        } catch {
+          colab = null;
+        }
+        return {
+          email,
+          nombre: String(colab?.nombre || sheetUser?.nombre || "").trim(),
+          telefono: String(colab?.telefono || sheetUser?.telefono || "").trim(),
+          nif: String(colab?.nif || sheetUser?.nif || "").trim(),
+          iban: String(colab?.iban || sheetUser?.iban || "").trim(),
+        };
       },
       async updateColaboradorProfile(data = {}) {
         const email = String(user?.email || "").trim().toLowerCase();
         if (!email) throw new Error("No hay usuario autenticado.");
         const sheetUser = await fetchUserFromUsersSheetByEmail_(email);
         if (!sheetUser) throw new Error("Usuario no encontrado en USUARIOS.");
+        // Nunca degradar GESTOR (u otro rol alto) al guardar "Mis datos".
+        const keptRole = preferHigherRole(sheetUser.role, role);
+        const nombre = String(data.nombre || sheetUser.nombre || "").trim();
+        const telefono = String(data.telefono || sheetUser.telefono || "").trim();
+        const nif = String(data.nif || "").trim();
+        const iban = String(data.iban || "").trim();
         const userPayload = {
           email,
-          nombre: String(data.nombre || sheetUser.nombre || "").trim(),
-          rol: normalizeRole(sheetUser.role || role || ROLES.COLABORADOR),
+          nombre,
+          rol: keptRole,
+          role: keptRole,
           activo: sheetUser.activo ? "SI" : "NO",
-          telefono: String(data.telefono || sheetUser.telefono || "").trim(),
+          telefono,
+          nif,
+          iban,
           pwd: String(sheetUser.pwd || ""),
           fecha_alta: String(sheetUser.fecha_alta || "").trim() || todayDmy_(),
           actor_email: email,
           actualizado_por_email: email,
+          preserve_role_if_usuario: "1",
+          preserve_higher_role: "1",
         };
+        let savedUser = false;
         try {
-          // Autoedición del propio perfil sin requerir permisos de gestor/admin.
           await registerUsuarioPublicoEnSheets_(userPayload);
+          savedUser = true;
         } catch {
-          // Compatibilidad con despliegues antiguos que no exponen endpoint público.
-          await upsertUsuarioEnSheets_(userPayload, email);
+          try {
+            await upsertUsuarioEnSheets_(userPayload, email);
+            savedUser = true;
+          } catch (e2) {
+            throw new Error(e2?.message || "No se pudo guardar en USUARIOS.");
+          }
         }
-        await upsertColaboradorEnSheets_(
-          {
-            email_colaborador: email,
-            nombre_colaborador: String(data.nombre || sheetUser.nombre || "").trim(),
-            telefono: String(data.telefono || "").trim(),
-            nif: String(data.nif || "").trim(),
-            iban: String(data.iban || "").trim(),
-            activo_colaborador: "SI",
-          },
-          email
-        );
+        // COLABORADORES es opcional (puede no existir endpoint en el backend).
+        try {
+          await upsertColaboradorEnSheets_(
+            {
+              email_colaborador: email,
+              nombre_colaborador: nombre,
+              telefono,
+              nif,
+              iban,
+              activo_colaborador: "SI",
+            },
+            email
+          );
+        } catch {
+          if (!savedUser) throw new Error("No se pudieron guardar los datos.");
+        }
+        return { ok: true, email, nombre, telefono, nif, iban };
       },
     }),
     [user, role, booting]

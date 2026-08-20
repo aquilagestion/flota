@@ -135,17 +135,34 @@ async function loadImageNaturalSizeInBrowser_(src) {
   });
 }
 
+function safePt_(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function computeTicketAnnexPlacementPt_(naturalWidth, naturalHeight, { hasLabel = false, pageWidthPt = A4_WIDTH_PT, pageHeightPt = A4_HEIGHT_PT } = {}) {
-  const pageWidthMm = pageWidthPt / MM_TO_PT;
-  const pageHeightMm = pageHeightPt / MM_TO_PT;
+  const pageWPt = safePt_(pageWidthPt, A4_WIDTH_PT);
+  const pageHPt = safePt_(pageHeightPt, A4_HEIGHT_PT);
+  const pageWidthMm = pageWPt / MM_TO_PT;
+  const pageHeightMm = pageHPt / MM_TO_PT;
   const { maxW, margin, titleH } = ticketPdfPageBoxMm(pageWidthMm, pageHeightMm, hasLabel);
   const fit = computeTicketAnnexImgBoxMm(naturalWidth, naturalHeight, { hasTitle: hasLabel });
-  const imgWPt = fit.width * MM_TO_PT;
-  const imgHPt = fit.height * MM_TO_PT;
-  const xPt = (margin + (maxW - fit.width) / 2) * MM_TO_PT;
-  const yPt = pageHeightPt - margin * MM_TO_PT - titleH * MM_TO_PT - imgHPt;
-  const labelYPt = pageHeightPt - margin * MM_TO_PT - 4;
-  return { xPt, yPt, imgWPt, imgHPt, labelYPt, marginPt: margin * MM_TO_PT, maxWPt: maxW * MM_TO_PT };
+  const fitW = safePt_(fit.width, 100);
+  const fitH = safePt_(fit.height, 140);
+  const imgWPt = safePt_(fitW * MM_TO_PT, 280);
+  const imgHPt = safePt_(fitH * MM_TO_PT, 400);
+  const xPt = safePt_((margin + (maxW - fitW) / 2) * MM_TO_PT, margin * MM_TO_PT);
+  const yPt = safePt_(pageHPt - margin * MM_TO_PT - titleH * MM_TO_PT - imgHPt, margin * MM_TO_PT);
+  const labelYPt = safePt_(pageHPt - margin * MM_TO_PT - 4, pageHPt - 20);
+  return {
+    xPt,
+    yPt,
+    imgWPt,
+    imgHPt,
+    labelYPt,
+    marginPt: safePt_(margin * MM_TO_PT, 22),
+    maxWPt: safePt_(maxW * MM_TO_PT, pageWPt - 44),
+  };
 }
 
 async function embedTicketInPdfLibPage_(pdfDoc, page, attachment, options = {}) {
@@ -181,21 +198,75 @@ async function embedTicketInPdfLibPage_(pdfDoc, page, attachment, options = {}) 
     const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const label = String(attachment.label || "").trim();
     const textWidth = font.widthOfTextAtSize(label, 10);
-    page.drawText(label, {
-      x: place.marginPt + Math.max(0, (place.maxWPt - textWidth) / 2),
-      y: place.labelYPt,
-      size: 10,
-      font,
-      color: rgb(0, 0, 0),
-    });
+    const lx = safePt_(place.marginPt + Math.max(0, (place.maxWPt - textWidth) / 2), place.marginPt);
+    const ly = safePt_(place.labelYPt, 20);
+    if (Number.isFinite(lx) && Number.isFinite(ly)) {
+      page.drawText(label, {
+        x: lx,
+        y: ly,
+        size: 10,
+        font,
+        color: rgb(0, 0, 0),
+      });
+    }
   }
 
-  page.drawImage(image, {
-    x: place.xPt,
-    y: place.yPt,
-    width: place.imgWPt,
-    height: place.imgHPt,
-  });
+  if (
+    Number.isFinite(place.xPt) &&
+    Number.isFinite(place.yPt) &&
+    Number.isFinite(place.imgWPt) &&
+    Number.isFinite(place.imgHPt) &&
+    place.imgWPt > 0 &&
+    place.imgHPt > 0
+  ) {
+    page.drawImage(image, {
+      x: place.xPt,
+      y: place.yPt,
+      width: place.imgWPt,
+      height: place.imgHPt,
+    });
+    return true;
+  }
+  return false;
+}
+
+function isPdfAttachment_(attachment) {
+  const mime = String(attachment?.mime || "").toLowerCase();
+  const src = String(attachment?.src || "").trim();
+  return mime.includes("pdf") || src.startsWith("data:application/pdf") || /\.pdf(\?|$)/i.test(src);
+}
+
+async function resolveTicketPdfBytes_(src, options = {}) {
+  let raw = String(src || "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("data:")) {
+    raw = String(
+      await ticketUrlToDataUri_(raw, {
+        apiGet: options.apiGet,
+        userEmail: options.userEmail,
+      }) || ""
+    ).trim();
+  }
+  if (!raw.startsWith("data:")) return null;
+  const parsed = parseTicketImageDataUri_(raw);
+  if (!parsed?.bytes?.length) return null;
+  if (!String(parsed.mime || "").toLowerCase().includes("pdf") && !raw.startsWith("data:application/pdf")) {
+    // Algunos backends devuelven application/octet-stream; comprobar cabecera %PDF
+    const b = parsed.bytes;
+    if (!(b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46)) return null;
+  }
+  return parsed.bytes;
+}
+
+async function appendPdfTicketPages_(pdfDoc, attachment, options = {}) {
+  const bytes = await resolveTicketPdfBytes_(attachment.src, options);
+  if (!bytes?.length) return false;
+  const { PDFDocument } = await import("pdf-lib");
+  const srcDoc = await PDFDocument.load(bytes);
+  const pageIndices = srcDoc.getPageIndices();
+  if (!pageIndices.length) return false;
+  const copied = await pdfDoc.copyPages(srcDoc, pageIndices);
+  for (const page of copied) pdfDoc.addPage(page);
   return true;
 }
 
@@ -209,6 +280,10 @@ export async function appendTicketAttachmentsWithPdfLib(pdfBytes, attachments, o
   const pdfDoc = await PDFDocument.load(input);
 
   for (const ticket of list) {
+    if (isPdfAttachment_(ticket)) {
+      const okPdf = await appendPdfTicketPages_(pdfDoc, ticket, options);
+      if (okPdf) continue;
+    }
     const page = pdfDoc.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
     const ok = await embedTicketInPdfLibPage_(pdfDoc, page, ticket, options);
     if (!ok) {

@@ -1,5 +1,6 @@
 import { EXPENSE_TYPES, FUEL_BRANDS, FUEL_TYPES, PARKING_ZONES, PAYMENT_METHODS } from "../domain/expenseSchema";
 import { buildDepartmentProjectSelectOptions } from "../../flotaWeb/lib/departmentProjectSelectOptions";
+import { withNumberedSelectLabels } from "../../flotaWeb/lib/numberedSelectOptions";
 import { isKmActualesRequired, showsKmActualesField } from "../../flotaWeb/lib/expenseKmActuales";
 import { buildExpenseMatriculaSelectOptions } from "../../flotaWeb/lib/spanishPlate";
 import {
@@ -74,7 +75,9 @@ const FORMA_PAGO_FIELD = {
 
 /** Cabecera común + campos del tipo + IVA (gastos frecuentes con orden fijo). */
 function voiceFieldsWithHeader_(specificFields) {
-  return [FORMA_PAGO_FIELD, MATRICULA_FIELD, DEPT_FIELD, ...specificFields, IVA_FIELD];
+  const hasOwnIva = specificFields.some((f) => f.key === "iva_porcentaje");
+  const tail = hasOwnIva ? [] : [IVA_FIELD];
+  return [FORMA_PAGO_FIELD, MATRICULA_FIELD, DEPT_FIELD, ...specificFields, ...tail];
 }
 
 const KM_COLAB_BODY = [
@@ -111,8 +114,21 @@ const BY_TIPO = {
     { key: "tipo_combustible", label: "Tipo combustible", kind: "select", options: FUEL_TYPES, aliases: ["tipo combustible", "combustible", "tipo de combustible"] },
     { key: "tipo_repostaje", label: "Tipo repostaje", kind: "select", options: TIPO_REPOSTAJE_OPTS, aliases: ["tipo repostaje", "tipo de repostaje", "repostaje parcial", "repostaje completo"] },
     { key: "litros_repostados", label: "Litros", kind: "amount", aliases: ["litros repostados", "litros"] },
-    { key: "precio_por_litro", label: "Precio por litro", kind: "amount", decimals: 3, aliases: ["precio por litro", "precio litro", "precio"] },
-    { key: "numero_ticket", label: "Nº factura o tiquet", kind: "invoice", aliases: ["numero ticket", "número ticket", "numero factura", "número factura", "ticket", "factura"] },
+    { key: "total_a_pagar", label: "Total a pagar", kind: "amount", aliases: ["total a pagar", "total pagado", "importe total", "total"] },
+    {
+      key: "iva_porcentaje",
+      label: "IVA %",
+      kind: "select",
+      options: ["4", "10", "21", "0", "__OTRO__"],
+      aliases: ["iva", "porcentaje de iva", "porcentaje iva", "iva por ciento", "por ciento de iva"],
+    },
+    {
+      key: "numero_ticket",
+      label: "Nº factura o tiquet",
+      kind: "invoice",
+      aliases: ["numero ticket", "número ticket", "numero factura", "número factura", "ticket", "factura"],
+      optional: true,
+    },
   ],
   PARKING: [
     { key: "fecha_aparcamiento", label: "Fecha aparcamiento", kind: "date", aliases: ["fecha aparcamiento", "fecha parking", "fecha"] },
@@ -125,40 +141,43 @@ const BY_TIPO = {
   PEAJES: [
     { key: "fecha_peaje", label: "Fecha peaje", kind: "date", aliases: ["fecha peaje", "fecha del peaje", "fecha"] },
     { key: "entidad_peaje", label: "Nombre establecimiento", kind: "text", aliases: ["entidad peaje", "entidad", "establecimiento", "nombre establecimiento"] },
-    { key: "numero_factura_peaje", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura peaje", "numero factura", "número factura", "factura", "ticket", "tiquet"] },
+    { key: "numero_factura_peaje", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura peaje", "numero factura", "número factura", "factura", "ticket", "tiquet"], optional: true },
     { key: "entrada_peaje", label: "Entrada peaje", kind: "text", aliases: ["entrada peaje", "entrada"], optional: true },
     { key: "salida_peaje", label: "Salida peaje", kind: "text", aliases: ["salida peaje", "salida"], optional: true },
     { key: "importe_peaje", label: "Importe peaje", kind: "amount", aliases: ["importe peaje", "importe"] },
-  ],
-  HOSPEDAJE: [
-    { key: "fecha_entrada_hospedaje", label: "Fecha entrada", kind: "date", aliases: ["fecha entrada", "entrada", "fecha de entrada"] },
-    { key: "fecha_salida_hospedaje", label: "Fecha salida", kind: "date", aliases: ["fecha salida", "salida", "fecha de salida"] },
-    { key: "entidad_hospedaje", label: "Entidad / establecimiento", kind: "text", aliases: ["entidad hospedaje", "entidad", "hotel", "establecimiento"] },
-    { key: "numero_factura_hospedaje", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"] },
-    { key: "numero_personas_hospedaje", label: "Nº personas", kind: "number", aliases: ["numero personas", "número personas", "personas", "numero de personas"] },
-    { key: "importe_hospedaje", label: "Importe hospedaje", kind: "amount", aliases: ["importe hospedaje", "importe"] },
-  ],
-  MANUTENCION: [
-    { key: "fecha_manutencion", label: "Fecha", kind: "date", aliases: ["fecha manutencion", "fecha manutención", "fecha"] },
-    { key: "establecimiento_manutencion", label: "Nombre establecimiento", kind: "text", aliases: ["establecimiento manutencion", "establecimiento manutención", "establecimiento", "restaurante", "nombre establecimiento"] },
-    { key: "numero_factura_manutencion", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"] },
-    { key: "numero_comensales_manutencion", label: "Nº comensales", kind: "number", aliases: ["numero comensales", "número comensales", "comensales", "numero de comensales"] },
-    { key: "importe_manutencion", label: "Importe manutención", kind: "amount", aliases: ["importe manutencion", "importe manutención", "importe"] },
   ],
   ITV: [
     { key: "estacion_itv", label: "Estación ITV", kind: "text", aliases: ["estacion itv", "estación itv", "itv"] },
     { key: "fecha_inspeccion", label: "Fecha inspección", kind: "date", aliases: ["fecha inspeccion", "fecha inspección", "fecha"] },
     { key: "fecha_proxima_inspeccion", label: "Próxima inspección", kind: "date", aliases: ["fecha proxima inspeccion", "fecha próxima inspección", "proxima inspeccion", "próxima inspección"] },
-    { key: "numero_factura_itv", label: "Nº factura", kind: "invoice", aliases: ["numero factura", "número factura", "factura"] },
+    { key: "numero_factura_itv", label: "Nº factura", kind: "invoice", aliases: ["numero factura", "número factura", "factura"], optional: true },
     { key: "importe_itv", label: "Importe", kind: "amount", aliases: ["importe itv", "importe"] },
   ],
   OTROS: [
     { key: "fecha_otros_gastos", label: "Fecha", kind: "date", aliases: ["fecha otros", "fecha gasto", "fecha"] },
     { key: "proveedor_otros_gastos", label: "Proveedor", kind: "text", aliases: ["proveedor"] },
     { key: "concepto_otros_gastos", label: "Concepto", kind: "text", aliases: ["concepto"] },
-    { key: "numero_factura_otros", label: "Nº factura", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"] },
+    { key: "numero_factura_otros", label: "Nº factura", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"], optional: true },
     { key: "importe_otros_gastos", label: "Importe", kind: "amount", aliases: ["importe otros", "importe"] },
     { key: "observaciones", label: "Observaciones", kind: "text", aliases: ["observaciones", "anotaciones", "notas"] },
+  ],
+  HOSPEDAJE: [
+    { key: "fecha_otros_gastos", label: "Fecha", kind: "date", aliases: ["fecha hospedaje", "fecha gasto", "fecha", "fecha entrada"] },
+    { key: "proveedor_otros_gastos", label: "Entidad / establecimiento", kind: "text", aliases: ["proveedor", "hotel", "alojamiento", "entidad", "establecimiento"] },
+    { key: "concepto_otros_gastos", label: "Concepto", kind: "text", aliases: ["concepto", "hospedaje"], optional: true },
+    { key: "numero_factura_otros", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"], optional: true },
+    { key: "numero_personas_hospedaje", label: "Nº huéspedes", kind: "number", aliases: ["numero huespedes", "número huéspedes", "huespedes", "huéspedes", "numero personas", "número personas", "personas"] },
+    { key: "importe_otros_gastos", label: "Importe", kind: "amount", aliases: ["importe hospedaje", "importe"] },
+    { key: "observaciones", label: "Observaciones", kind: "text", aliases: ["observaciones", "anotaciones", "notas"], optional: true },
+  ],
+  MANUTENCION: [
+    { key: "fecha_otros_gastos", label: "Fecha", kind: "date", aliases: ["fecha manutencion", "fecha manutención", "fecha gasto", "fecha"] },
+    { key: "proveedor_otros_gastos", label: "Nombre establecimiento", kind: "text", aliases: ["proveedor", "restaurante", "establecimiento", "nombre establecimiento"] },
+    { key: "concepto_otros_gastos", label: "Concepto", kind: "text", aliases: ["concepto", "manutencion", "manutención"], optional: true },
+    { key: "numero_factura_otros", label: "Nº factura / tiquet", kind: "invoice", aliases: ["numero factura", "número factura", "factura", "ticket", "tiquet"], optional: true },
+    { key: "numero_comensales_manutencion", label: "Nº comensales", kind: "number", aliases: ["numero comensales", "número comensales", "comensales", "numero de comensales"] },
+    { key: "importe_otros_gastos", label: "Importe", kind: "amount", aliases: ["importe manutencion", "importe manutención", "importe"] },
+    { key: "observaciones", label: "Observaciones", kind: "text", aliases: ["observaciones", "anotaciones", "notas"], optional: true },
   ],
   MULTAS_SANCIONES: [
     { key: "fecha_multa", label: "Fecha multa", kind: "date", aliases: ["fecha multa", "fecha"] },
@@ -190,14 +209,14 @@ const BY_TIPO = {
     { key: "fecha_compra_repuestos", label: "Fecha compra", kind: "date", aliases: ["fecha compra repuestos", "fecha compra", "fecha"] },
     { key: "proveedor_repuestos", label: "Proveedor / taller", kind: "text", aliases: ["proveedor repuestos", "proveedor", "taller"] },
     { key: "descripcion_repuestos", label: "Descripción", kind: "text", aliases: ["descripcion repuestos", "descripción repuestos", "descripcion", "descripción"] },
-    { key: "numero_factura_repuestos", label: "Nº factura", kind: "invoice", aliases: ["numero factura repuestos", "numero factura", "número factura", "factura"] },
+    { key: "numero_factura_repuestos", label: "Nº factura", kind: "invoice", aliases: ["numero factura repuestos", "numero factura", "número factura", "factura"], optional: true },
     { key: "importe_repuestos", label: "Importe", kind: "amount", aliases: ["importe repuestos", "importe"] },
   ],
   MANTENIMIENTO_REPARACIONES: [
     { key: "fecha_compra_mantenimiento", label: "Fecha compra", kind: "date", aliases: ["fecha compra mantenimiento", "fecha compra", "fecha"] },
     { key: "proveedor_mantenimiento", label: "Proveedor", kind: "text", aliases: ["proveedor mantenimiento", "proveedor", "taller"] },
     { key: "descripcion_mantenimiento", label: "Descripción", kind: "text", aliases: ["descripcion mantenimiento", "descripción mantenimiento", "descripcion", "descripción"] },
-    { key: "numero_factura_mantenimiento", label: "Nº factura", kind: "invoice", aliases: ["numero factura mantenimiento", "numero factura", "número factura", "factura"] },
+    { key: "numero_factura_mantenimiento", label: "Nº factura", kind: "invoice", aliases: ["numero factura mantenimiento", "numero factura", "número factura", "factura"], optional: true },
     { key: "importe_mantenimiento", label: "Importe", kind: "amount", aliases: ["importe mantenimiento", "importe"] },
     { key: "fecha_proximo_mantenimiento", label: "Próximo mantenimiento", kind: "date", aliases: ["fecha proximo mantenimiento", "fecha próximo mantenimiento", "proximo mantenimiento"] },
     { key: "kilometros_proximo_mantenimiento", label: "Km próximo mantenimiento", kind: "number", aliases: ["kilometros proximo mantenimiento", "kilómetros próximo mantenimiento", "km proximo"] },
@@ -218,14 +237,14 @@ function withKmAfterDepartamentoIfNeeded_(tipo, fields) {
 /** Enriquece campos con opciones dinámicas (proyectos, vehículos). */
 export function enrichVoiceFieldsForForm(tipo, projectOptions = [], vehicleOptions = []) {
   const base = getVoiceFieldsForTipo(tipo);
-  const projOpts = (Array.isArray(projectOptions) ? projectOptions : [])
-    .map((p) => String(p?.label || p?.value || "").trim())
-    .filter(Boolean);
+  const numberedProjects = withNumberedSelectLabels(
+    (Array.isArray(projectOptions) ? projectOptions : []).filter((p) => String(p?.value || "").trim())
+  );
   const deptOpts = buildDepartmentProjectSelectOptions(projectOptions);
   const plateOpts = buildExpenseMatriculaSelectOptions(vehicleOptions);
   return base.map((field) => {
     if (field.key === "proyecto_colaborador_id") {
-      return { ...field, options: projOpts };
+      return { ...field, options: numberedProjects, kind: "select" };
     }
     if (field.key === "departamento_o_proyecto") {
       return { ...field, options: deptOpts, kind: "select" };

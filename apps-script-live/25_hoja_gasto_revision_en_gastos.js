@@ -8,10 +8,11 @@ function apiHojaGastoActualizarRevision(payload) {
     payload.responsable_email ||
     ""
   ).trim().toLowerCase();
-  requireRolGestorOnly_(actor);
 
   var hojaId = String(payload.hoja_gasto_id || payload.hoja_id_local || "").trim();
   if (!hojaId) throw new Error("Falta campo: hoja_gasto_id / hoja_id_local");
+
+  requirePuedeRevisarHojaGasto_(actor, hojaId);
 
   var estado = String(payload.hoja_gasto_estado || payload.estado || "EN_REVISION")
     .trim()
@@ -23,7 +24,9 @@ function apiHojaGastoActualizarRevision(payload) {
     .trim()
     .toLowerCase();
 
-  var fechaRevision = String(payload.hoja_gasto_fecha_revision || payload.fecha_revision || new Date().toISOString()).trim();
+  var fechaRevision = normalizeDateDMYCell_(
+    payload.hoja_gasto_fecha_revision || payload.fecha_revision || new Date()
+  );
   var motivo = String(payload.hoja_gasto_motivo_rechazo || payload.motivo_rechazo || "").trim();
 
   if (estado !== "ENVIADA" && estado !== "EN_REVISION" && estado !== "APROBADA" && estado !== "RECHAZADA") {
@@ -71,7 +74,7 @@ function apiHojaGastoActualizarRevision(payload) {
   var colMotivo = need("hoja_gasto_motivo_rechazo");
   var colEstadoPago = opt("hoja_gasto_estado_pago");
 
-  var hojaVals = sh.getRange(2, colHoja, lastRow - 1, 1).getValues();
+  var hojaVals = sh.getRange(2, colHoja, lastRow, 1).getValues();
   var updated = 0;
 
   for (var r = 0; r < hojaVals.length; r++) {

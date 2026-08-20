@@ -5,7 +5,7 @@
  * HELP_APP_VERSION: al ejecutar `npm run bundle:local` / `build-apk.bat`, se iguala
  * a `expo.version` en app.json (junto con Gradle y package.json): scripts/sync-app-versions-from-app-json.ps1
  */
-export const HELP_APP_VERSION = "1.0.24";
+export const HELP_APP_VERSION = "1.2.90";
 
 export const HELP_BODY = `MANUAL COMPLETO — APLICACIÓN FLOTA / GESTIFLOTA
 Versión de esta guía: ${HELP_APP_VERSION}
@@ -63,18 +63,21 @@ OPERARIO
 • Menú: Vehículos, Gastos, Mantenimiento, Historial, Hojas gasto, Uso vehículos, Ayuda, Sincronizar, Contraseña, Salir.
 • Ve y crea sus propios registros; no administra a otros ni aprueba hojas de gasto globales.
 • En “Hojas de gasto”: solo genera y consulta sus propias hojas y solo puede incluir en una hoja los gastos “pagados por usuario” que él mismo haya registrado.
+• En “Uso vehículos”: puede **retirar** sus solicitudes PENDIENTE y **liberar** sus reservas APROBADAS (cuando ya no necesita el vehículo).
 
 RESPONSABLE
 • Mismo menú base que operario.
 • Debe figurar con rol **RESPONSABLE** en la hoja **USUARIOS** (mismo correo con el que entras a la app). Sin eso, el servidor no te tratará como responsable aunque en FLOTA aparezca tu nombre.
 • En “Uso vehículos” es quien **debe** aprobar o rechazar las solicitudes de uso de los vehículos que en **FLOTA** estén a su cargo: campo responsable y/o **e-mail_de_notificaciones** con su correo (puede haber varios correos separados por ; o ,).
-• En Historial puede ver también actividad de vehículos a su cargo (según datos del servidor).
+• Puede **liberar reservas APROBADAS** de vehículos a su cargo (botón «Liberar reserva»), total o parcial.
+• En Historial puede ver también actividad de vehículos a su cargo (según datos del servidor). Por defecto puede filtrar «Gastos de mis vehículos» y el mes en curso, y marcar incidencias (sin ticket, sin hoja, no sincronizado).
+• En “Aprobaciones”: puede **aprobar o rechazar** sus propias hojas de gasto y las de **operarios** con gastos en matrículas a su cargo. El **pago** lo marca ADMINISTRACIÓN.
 • En “Hojas de gasto”: puede generar sus propias hojas; en la lista y al elegir gastos pendientes ve los suyos y también los de otros usuarios cuando el gasto está imputado a una matrícula que figura en FLOTA como vehículo a su cargo (responsable o correo de notificaciones).
 
 GESTOR
 • Todo lo del operario más: Aprobaciones (revisión de hojas de gasto), Usuarios, Rol responsable, Destinos.
 • En “Hojas de gasto”: puede generar su propia hoja y ver o listar todas las hojas y gastos pendientes que haya en el dispositivo según la sincronización (consulta amplia frente a operario/responsable).
-• En “Uso vehículos” puede ver todas las solicitudes según el servidor; la **resolución habitual** (aprobar/rechazar) corresponde al **RESPONSABLE** del vehículo en USUARIOS + FLOTA. El gestor suele intervenir en altas de usuarios, “Rol responsable” y administración general.
+• En “Uso vehículos” puede ver todas las solicitudes según el servidor; la **resolución habitual** (aprobar/rechazar) corresponde al **RESPONSABLE** del vehículo en USUARIOS + FLOTA. El gestor puede **liberar** cualquier reserva APROBADA y suele intervenir en altas de usuarios, “Rol responsable” y administración general.
 • Puede dar de alta o editar vehículos si el backend lo permite.
 
 ADMINISTRACIÓN
@@ -93,14 +96,16 @@ Cada icono abre una pantalla. Los que no tengas permiso no aparecen.
 • Vehículos — Flota.
 • Gastos — Formulario de gasto.
 • Mantenimiento — Registro de mantenimiento.
-• Historial — Cronología gastos/mantenimientos.
+• Historial — Cronología gastos/mantenimientos; filtros por vehículo, periodo e incidencias. GESTOR: también por usuario y proyecto.
 • Hojas gasto — Agrupación y envío de hojas de reembolso.
-• Uso vehículos — Solicitudes, pendientes (si aplicas), calendario y disponibilidades.
+• Uso vehículos — Solicitudes, pendientes (si aplicas), calendario y disponibilidades. El GESTOR ve badges de escalado en el menú si hay solicitudes críticas.
 • Aprobaciones — Hojas de gasto (revisión / pago).
 • Usuarios — Lista y edición de usuarios.
 • Rol responsable — Altas de responsables y asignación de matrículas.
 • Destinos — Dónde se sincronizan archivos (solo gestor).
-• Sincronizar — Envía cola pendiente; el número en el icono son tareas pendientes.
+• Mi bandeja — Resumen de pendientes: sincronización, solicitudes de uso (con etiquetas SLA y aviso de escalado para gestor) y hojas de gasto por revisar (según rol).
+• Informe mensual — Solo GESTOR y ADMINISTRACION: resumen del mes (hojas por estado, gastos sin hoja, vehículos sin responsable activo, tiempo medio de aprobación). Selector de mes/año y botón Refrescar.
+• Sincronizar — Envía cola pendiente; el número en el icono son tareas pendientes. Al terminar muestra detalle si quedan errores.
 • Ayuda — Este texto.
 • Contraseña — Ventana emergente para cambiar contraseña.
 • Salir — Cierra sesión.
@@ -121,6 +126,10 @@ H. GASTOS (FORMULARIO COMPLETO)
 
 Es un formulario largo pensado para sustituir formularios web: primero eliges matrícula y departamento/proyecto (o “otro” escribiendo texto). Luego el TIPO DE GASTO. Según el tipo, aparecen solo los campos que aplican.
 
+En web (pantalla ancha) el formulario se reparte en tres bloques: datos generales, datos del gasto y ticket/adjuntos.
+
+Puedes usar «Rellenar todo con voz» (o el 🎤 de cada campo) para dictar valores. El nº de factura/tiquet es opcional al crear el gasto; al generar la hoja de gastos sí es obligatorio.
+
 Tipos de gasto disponibles en la app:
 
 1) SEGURO — compañía, póliza, coberturas, fechas de vigencia, prima, etc.
@@ -128,14 +137,18 @@ Tipos de gasto disponibles en la app:
 3) OTROS IMPUESTOS — tipo, fechas e importes.
 4) REPUESTOS / RECAMBIO — fechas de compra, proveedor, descripción, factura, importe.
 5) MANTENIMIENTO / REPARACIONES — fechas, proveedor, descripción, facturas, importes, próximo mantenimiento y kilómetros previstos si aplica.
-6) COMBUSTIBLES — fecha, entidad y lugar de repostaje, marca y tipo de combustible, kilómetros del vehículo, litros, precio por litro, descuento, puntos, total, número de ticket, etc. (listas de marcas y tipos vienen predefinidas en la app).
+6) COMBUSTIBLES — fecha, entidad, tipo, kilómetros, litros, total pagado e IVA (4/10/21/0 u otro). La app calcula sola: precio/litro con IVA, precio/litro sin IVA, total neto y cuota de IVA.
 7) PARKING — fecha, entidad, tipo de zona (azul, verde, etc.), horas de inicio y fin, importe.
-8) PEAJES — fecha, entidad, entrada y salida, importe.
+8) PEAJES — fecha, entidad, nº factura/tiquet, entrada y salida, importe.
 9) ITV — estación, fechas de inspección y próxima, importe, número de factura.
 10) MULTAS / SANCIONES — fecha, conductor, lugar, organismo, tipo de infracción, importe.
 11) OTROS — fecha, proveedor, concepto, importe, factura.
 
 Campos transversales habituales: forma de pago (Usuario, Transferencia, Tarjeta según lista), observaciones, kilómetros actuales del vehículo.
+
+Desglose IVA:
+• Tras indicar el importe total del gasto, eliges el IVA (4 %, 10 %, 21 %, 0 % u otro %).
+• La app calcula sola la base imponible y la cuota de IVA a partir del total: base = total ÷ (1 + IVA/100).
 
 Fotos y odómetro:
 • Puedes adjuntar fotos de tickets o documentos.
@@ -167,8 +180,9 @@ K. HOJAS DE GASTO
 ════════════════════════════════════════════════════════════
 
 • Permite agrupar gastos ya registrados en una “hoja de gasto” numerada para el proceso interno de reembolso.
-• Solo aparecen como seleccionables los gastos con forma de pago “Usuario”, sin hoja asignada aún, y según tu rol (OPERARIO: solo los tuyos; RESPONSABLE: los tuyos o los de otros si la matrícula del gasto es un vehículo a tu cargo en FLOTA; GESTOR: todos los que haya en el móvil).
+• Solo aparecen como seleccionables los gastos con forma de pago «Usuario» o «Tarjeta Grefa» (tarjeta corporativa), sin hoja asignada aún, y según tu rol (OPERARIO: solo los tuyos; RESPONSABLE: los tuyos o los de otros si la matrícula del gasto es un vehículo a tu cargo en FLOTA; GESTOR: todos los que haya en el móvil). Si la hoja incluye gastos con tarjeta corporativa, el texto legal del PDF será el de justificación contable (no reembolso).
 • La lista de hojas creadas en el teléfono respeta la misma lógica de visibilidad por rol (GESTOR ve todo; RESPONSABLE ve las suyas y las que incluyan líneas con matrícula a su cargo; OPERARIO solo las suyas).
+• Al crear la hoja, la app avisa si algún gasto seleccionado no tiene ticket, no está sincronizado o le falta proyecto; puedes corregir o continuar igualmente.
 • Generación de PDF / impresión o compartir según botones disponibles (usa el visor o menú compartir del móvil).
 • Los textos y numeración pueden adaptarse al nombre del usuario para no pisar hojas de otros compañeros.
 
@@ -178,8 +192,13 @@ L. USO DE VEHÍCULOS (SOLICITUDES)
 
 La pantalla tiene varias vistas (pestañas arriba):
 
-• Solicitudes — Formulario para crear una solicitud y, debajo, listado filtrable por estado (PENDIENTE, APROBADA, etc.) y búsqueda. Las fechas no muestran el almanaque siempre visible: toca el campo de fecha y se abre un calendario mensual en ventana; al elegir el día se guarda la fecha y puedes cerrar sin cambiar con «Cerrar». Las horas de inicio y fin son opcionales: si las quieres, toca el botón de hora y usa «Guardar»; si no, deja sin hora o pulsa «Sin hora» en el selector. Motivo y matrícula siguen siendo necesarios para enviar.
+• Solicitudes — Formulario para crear una solicitud y, debajo, listado filtrable por estado (PENDIENTE, APROBADA, RECHAZADA, CANCELADA, LIBERADA) y búsqueda. Las fechas no muestran el almanaque siempre visible: toca el campo de fecha y se abre un calendario mensual en ventana; al elegir el día se guarda la fecha y puedes cerrar sin cambiar con «Cerrar». Las horas de inicio y fin son opcionales: si las quieres, toca el botón de hora y usa «Guardar»; si no, deja sin hora o pulsa «Sin hora» en el selector. Motivo y matrícula siguen siendo necesarios para enviar.
+  – **Retirar:** el titular puede cancelar su solicitud **PENDIENTE**.
+  – **Liberar reserva:** en solicitudes **APROBADAS**, el titular (operario), el RESPONSABLE del vehículo o el GESTOR pueden liberar el uso (total o parcial, **solo por fechas**; las horas no cuentan) para que el vehículo vuelva a aparecer libre en disponibilidades.
 • Pendientes — Solo la ven GESTOR y RESPONSABLE. Lista solicitudes **PENDIENTE** que el servidor te devuelve según tu rol: si eres **RESPONSABLE** (en USUARIOS), las de matrículas a tu cargo en FLOTA; si eres **GESTOR**, las de todo el libro cargado. Sirve para revisar pendientes sin pasar por el formulario de alta.
+  – **SLA (tiempo en PENDIENTE):** la antigüedad se calcula desde **fecha_solicitud** (o, si falta, desde fecha de inicio del uso). Etiqueta **naranja** si lleva más de **24 horas**; **roja** si supera **48 horas** (texto «Escalar»).
+  – **GESTOR — sub-filtros:** Todas | Retrasadas (+24h) | Sin responsable activo | Escalado. «Escalado» agrupa solicitudes sin ningún aprobador activo en USUARIOS para ese vehículo o con SLA crítico (+48h).
+  – **Suplentes / varios correos:** en FLOTA, columna **e-mail_de_notificaciones** admite varios correos separados por **;** o **,**. Cualquiera de ellos cuenta como responsable de notificación si está en USUARIOS con rol RESPONSABLE, GESTOR o ADMINISTRACIÓN y **activo = SI**. Útil para suplentes cuando el responsable principal no está disponible.
 • Calendario — Vista mensual de ocupación según solicitudes aprobadas o pendientes; al tocar un día se abre el detalle y puedes tocar un vehículo libre para ir al formulario con esa fecha. No se puede cursar una solicitud si el periodo solapa con otra pendiente o aprobada del mismo vehículo (la app y el servidor lo bloquean).
 • Disponibilidades — Comprueba un rango de fechas (mismo criterio de calendario en ventana para elegir día) y, si quieres, horas opcionales, para ver qué vehículos quedan libres u ocupados por solicitudes aprobadas o pendientes en ese intervalo.
 
@@ -233,6 +252,20 @@ Q. APROBACIONES (HOJAS DE GASTO)
 • GESTOR: pasa hojas a “en revisión”, aprueba o rechaza revisión; puede abrir PDF resumen.
 • ADMINISTRACIÓN: además gestiona estados de pago (pago pendiente, pagada, rechazada pago, etc.) según botones mostrados.
 • Compartir o imprimir PDF usa las funciones del sistema Android.
+
+════════════════════════════════════════════════════════════
+Q.1 INFORME MENSUAL Y RECORDATORIOS AUTOMÁTICOS
+════════════════════════════════════════════════════════════
+
+Informe mensual (app):
+• Menú → Informe mensual (GESTOR / ADMINISTRACION).
+• Elige mes y año y pulsa Refrescar.
+• Muestra: hojas de gasto del mes agrupadas por estado (según fecha de envío); gastos del mes sin hoja asignada por usuario; vehículos activos sin responsable o correo de notificaciones válido frente a usuarios RESPONSABLE/GESTOR activos; tiempo medio entre envío y revisión de hojas aprobadas en el periodo.
+
+Recordatorios por correo (servidor, sin acción en la app):
+• Día 25 de cada mes: correo a usuarios de campo activos (USUARIO, RESPONSABLE, COLABORADOR) recordando generar la hoja de gasto del mes en curso.
+• Día 2 de cada mes: correo a GESTOR y ADMINISTRACION con el resumen de hojas ENVIADA / EN REVISIÓN pendientes; y correo a cada RESPONSABLE activo con el número de hojas de su ámbito pendientes de revisar.
+• Los triggers se instalan una vez en Apps Script ejecutando instalarTriggersGobiernoMensual_() (zona horaria Europe/Madrid).
 
 ════════════════════════════════════════════════════════════
 R. CONTRASEÑA

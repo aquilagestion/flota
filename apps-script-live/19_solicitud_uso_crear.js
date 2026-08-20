@@ -873,3 +873,106 @@ function apiSolicitudCrear(payload) {
     email_usado_fallback_gestores: !!rc.usado_fallback_gestores,
   };
 }
+
+// ======================================================================
+// solicitud_ocupar — crea una solicitud ya APROBADA en un solo paso.
+// Solo permitido a GESTOR y RESPONSABLE con la matrícula a cargo.
+// ======================================================================
+
+/**
+ * Crea una solicitud de uso directamente con estado APROBADA (sin pasar por pendiente).
+ * Payload igual que solicitud_crear más el campo resuelto_por_email (usa user_email si no).
+ */
+function apiSolicitudOcupar(payload) {
+  payload = payload || {};
+  var requester = normalizeEmail_(
+    payload.resuelto_por_email || payload.user_email || payload.requester_email || ""
+  );
+  var rol = normalizeRolSegunUsuarios_(requester);
+  var assigned = getMatriculasACargo_(requester);
+  var hasAssignedMatriculas = false;
+  for (var mk in assigned) {
+    if (!Object.prototype.hasOwnProperty.call(assigned, mk)) continue;
+    if (assigned[mk]) { hasAssignedMatriculas = true; break; }
+  }
+  var canOcupar = rol === "GESTOR";
+  if (!canOcupar) {
+    throw new Error("No autorizado: solo GESTOR puede marcar ocupacion directa");
+  }
+
+  var mat = String(payload.matricula || "").trim().toUpperCase();
+  if (!mat) throw new Error("Falta campo: matricula");
+
+  var trab = normalizeEmail_(payload.trabajador_email || payload.user_email || "");
+  if (!trab) throw new Error("Falta campo: trabajador_email");
+
+  var fi = String(payload.fecha_inicio || payload.fecha_desde || "").trim();
+  var ff = String(payload.fecha_fin || payload.fecha_hasta || "").trim();
+  if (!fi || !ff) throw new Error("Faltan fecha_inicio y fecha_fin");
+
+  var hi = String(payload.hora_inicio || "").trim();
+  var hf = String(payload.hora_fin || "").trim();
+  var mot = String(payload.motivo || "").trim();
+  if (!mot) throw new Error("Falta campo: motivo");
+
+  // Horas opcionales: sin hora => día completo 00:00 -> 23:59
+  if (!hi) hi = "00:00";
+  if (!hf) hf = "23:59";
+
+  var iniChk = parseFechaHoraDesdeFila_(fi, hi);
+  var finChk = parseFechaHoraDesdeFila_(ff, hf);
+  if (!iniChk || !finChk || iniChk >= finChk) throw new Error("Rango de fecha/hora inválido");
+  if (haySolapeReservaParaNuevaSolicitud_(mat, iniChk, finChk, "")) {
+    throw new Error("El vehículo ya tiene una reserva aprobada en ese periodo. Elige otras fechas u otro vehículo.");
+  }
+
+  var id = "SOL-" + new Date().getTime() + "-" + String(Math.floor(Math.random() * 9000) + 1000);
+  var ahora = normalizeDateDMYCell_(new Date());
+
+  var sh = getSheet("SOLICITUDES");
+  var rowObj = {
+    id_solicitud: id,
+    matricula: mat,
+    trabajador_email: trab,
+    trabajador_nombre: String(payload.trabajador_nombre || "").trim(),
+    fecha_solicitud: ahora,
+    fecha_inicio: fi,
+    hora_inicio: hi,
+    fecha_fin: ff,
+    hora_fin: hf,
+    motivo: mot,
+    estado: "APROBADA",
+    motivo_rechazo: "",
+    resuelto_por_email: requester,
+    fecha_resolucion: ahora,
+  };
+  appendRowByHeaders_(sh, rowObj);
+
+  // Reforzar trabajador_email en la fila si quedó vacío por nombre de columna distinto
+  try {
+    var lr = sh.getLastRow();
+    if (lr >= 2) {
+      var h1 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+      var hNorm = h1.map(function (h) { return String(h || "").trim().replace(/^\uFEFF/, ""); });
+      var icT = headerIndexCI_(hNorm, "trabajador_email");
+      if (icT >= 0) {
+        var cur = normalizeEmail_(String(sh.getRange(lr, icT + 1).getValue() || ""));
+        if (!looksLikeEmail_(cur)) sh.getRange(lr, icT + 1).setValue(trab);
+      }
+    }
+  } catch (eColD) {
+    Logger.log("apiSolicitudOcupar: refuerzo trabajador_email: " + String(eColD && eColD.message ? eColD.message : eColD));
+  }
+
+  return {
+    id_solicitud: id,
+    estado: "APROBADA",
+    matricula: mat,
+    fecha_inicio: fi,
+    hora_inicio: hi,
+    fecha_fin: ff,
+    hora_fin: hf,
+    motivo: mot,
+    aprobado_por: requester,
+  };
+}

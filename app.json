@@ -2,7 +2,7 @@
   "expo": {
     "name": "app",
     "slug": "app",
-    "version": "1.0.24",
+    "version": "1.2.90",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -29,6 +29,18 @@
       "eas": {
         "projectId": "4114198c-ed0a-4f30-8704-c7897ddfd3ca"
       }
-    }
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Permite el acceso al micrófono para rellenar gastos por voz.",
+          "speechRecognitionPermission": "Permite el reconocimiento de voz para rellenar gastos por voz.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ]
+    ]
   }
 }

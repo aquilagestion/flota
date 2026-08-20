@@ -1,4 +1,4 @@
-import { escapeHtmlValue, formatCurrencyEsValue, formatDateEsValue, normalizeDateToDmy, parseDateFlexible } from "./format";
+import { escapeHtmlValue, expenseDate, formatCurrencyEsValue, formatDateEsValue, normalizeDateToDmy, parseDateFlexible, sanitizeInvoiceNumberText } from "./format";
 import { isOwnVehicleExpenseRecord, resolveExpenseSheetModel } from "./ownVehicleColaborador";
 
 export function normalizeRemoteSheetRow(row) {
@@ -57,10 +57,16 @@ export function amountFromExpense(expense) {
       return fb(expense?.importe_aparcamiento);
     case "PEAJES":
       return fb(expense?.importe_peaje);
+    case "GASTOS_BILLETES":
+      return fb(
+        expense?.coste_total,
+        expense?.importe_pagar,
+        parse(expense?.precio_total_billete) + parse(expense?.tasas_billete)
+      );
     case "HOSPEDAJE":
-      return fb(expense?.importe_hospedaje);
+      return fb(expense?.importe_hospedaje, expense?.importe_otros_gastos);
     case "MANUTENCION":
-      return fb(expense?.importe_manutencion);
+      return fb(expense?.importe_manutencion, expense?.importe_otros_gastos);
     case "ITV":
       return fb(expense?.importe_itv);
     case "MULTAS_SANCIONES":
@@ -123,6 +129,7 @@ export function expenseTypeSelectLabel(option) {
   const value = String(option?.value || "").trim().toUpperCase();
   if (value === "COMBUSTIBLES") return "COMBUSTIBLE";
   if (value === "ITV") return "Revisión ITV";
+  if (value === "GASTOS_BILLETES") return "GASTOS BILLETES";
   if (value === "HOSPEDAJE") return "Hospedaje";
   if (value === "MANUTENCION") return "Manutención";
   return String(option?.label || option?.value || "").trim();
@@ -137,6 +144,8 @@ export function expenseTypeCode(value) {
     .replace(/[\s\-]+/g, "_");
 }
 
+export { conceptoFromExpenseRecord, resolveSheetLineConcepto } from "./expenseIva";
+
 /** Etiqueta de concepto en hoja de gasto PDF: solo tipo (combustible, peaje…), sin proyecto. */
 export function expenseSheetConceptLabel(lineOrTipo) {
   const map = {
@@ -147,6 +156,7 @@ export function expenseSheetConceptLabel(lineOrTipo) {
     REPUESTOS_RECAMBIO: "repuestos",
     PARKING: "aparcamiento",
     PEAJES: "peaje",
+    GASTOS_BILLETES: "billete",
     HOSPEDAJE: "hospedaje",
     MANUTENCION: "manutención",
     ITV: "itv",
@@ -157,6 +167,15 @@ export function expenseSheetConceptLabel(lineOrTipo) {
     IMPUESTOS: "impuestos",
     OTROS_IMPUESTOS: "otros impuestos",
   };
+  const conceptoExplicit =
+    typeof lineOrTipo === "object"
+      ? String(lineOrTipo?.concepto_otros_gastos || lineOrTipo?.concepto || "").trim()
+      : "";
+  if (conceptoExplicit) {
+    const conceptoKey = conceptoExplicit.toUpperCase().replace(/[\s\-]+/g, "_");
+    if (map[conceptoKey]) return map[conceptoKey];
+    return conceptoExplicit;
+  }
   const tipo =
     typeof lineOrTipo === "object"
       ? String(lineOrTipo?.tipo_gasto || "").trim().toUpperCase()
@@ -190,7 +209,7 @@ export function detectExpenseSheetModel(sheetMeta, lines) {
   return resolveExpenseSheetModel(lines, sheetMeta);
 }
 
-import { entityFromExpenseRecord, primaryExpenseAmount } from "./expenseIva";
+import { entityFromExpenseRecord, primaryExpenseAmount, resolveSheetLineConcepto } from "./expenseIva";
 
 export function expenseLineEntityOrProvider(line) {
   const value = String(line?.entidad || "").trim() || entityFromExpenseRecord(line);
@@ -390,6 +409,22 @@ export function isHojasGastoApiPermissionError(err) {
   );
 }
 
+/** Nombre visible del titular de hoja (Excel importado > nº hoja > usuario). */
+export function resolveExpenseSheetPersonName(row, numHoja = "") {
+  const excelName = String(row?.excel_trabajador_nombre || "").trim();
+  if (excelName && !excelName.includes("@")) return excelName;
+  const num = String(numHoja || row?.num_hoja_gasto || row?.Num_Hoja_Gasto || "").trim();
+  const marker = " R.G.T. ";
+  const p = num.indexOf(marker);
+  if (p >= 0) {
+    const nameFromNum = num.slice(p + marker.length).split(" - ")[0].trim();
+    if (nameFromNum) return nameFromNum;
+  }
+  const stored = String(row?.usuario_nombre || row?.nombre || "").trim();
+  if (stored && !stored.includes("@")) return stored;
+  return stored;
+}
+
 /** Agrupa gastos con hoja_gasto_id (fallback si el servidor no expone hojas_gasto_list). */
 export function buildHojasGastoListFromExpenses(expenses) {
   const byKey = new Map();
@@ -411,7 +446,7 @@ export function buildHojasGastoListFromExpenses(expenses) {
         hoja_gasto_total: 0,
         hoja_gasto_observaciones: String(g?.hoja_gasto_observaciones || "").trim(),
         usuario_email: String(g?.usuario_email || g?.responsable_email || "").trim().toLowerCase(),
-        usuario_nombre: String(g?.usuario_nombre || "").trim(),
+        usuario_nombre: resolveExpenseSheetPersonName(g),
         lineas_count: 0,
       });
     }
@@ -441,7 +476,15 @@ export function buildHojaGastoDetalleFromExpenses(expenses, hojaId) {
     tipo_gasto: String(g?.tipo_gasto || "").trim(),
     concepto: String(g?.tipo_gasto || "GASTO").trim(),
     entidad: String(g?.proveedor || g?.entidad_combustible || g?.proveedor_otros_gastos || "").trim(),
-    numero_factura: String(g?.numero_ticket || g?.numero_factura_otros || "").trim(),
+    numero_factura: sanitizeInvoiceNumberText(
+      g?.numero_ticket ||
+        g?.numero_factura_otros ||
+        g?.numero_factura_peaje ||
+        g?.numero_factura_mantenimiento ||
+        g?.numero_factura_repuestos ||
+        g?.numero_factura_itv ||
+        ""
+    ),
     proyecto: String(g?.proyecto || g?.departamento_proyecto || "").trim(),
     importe: Number(amountFromExpense(g) || 0),
   }));
@@ -450,7 +493,7 @@ export function buildHojaGastoDetalleFromExpenses(expenses, hojaId) {
     hoja_gasto_id: hid,
     num_hoja_gasto: String(first?.num_hoja_gasto || first?.Num_Hoja_Gasto || "").trim(),
     usuario_email: String(first?.responsable_email || first?.usuario_email || "").trim().toLowerCase(),
-    usuario_nombre: String(first?.usuario_nombre || "").trim(),
+    usuario_nombre: resolveExpenseSheetPersonName(first, first?.num_hoja_gasto || first?.Num_Hoja_Gasto),
     hoja_gasto_fecha_envio: String(first?.hoja_gasto_fecha_envio || "").trim(),
     hoja_gasto_observaciones: String(first?.hoja_gasto_observaciones || "").trim(),
     hoja_gasto_estado: String(first?.hoja_gasto_estado || "ENVIADA").trim().toUpperCase(),
@@ -531,47 +574,7 @@ export function normalizeExpenseRowForApp(row) {
 
 /** Fecha mostrada / filtros en hojas de gasto. */
 export function expenseDisplayDate(expense) {
-  const e = expense || {};
-  const tipo = String(e.tipo_gasto || "").trim().toUpperCase();
-  const byTipo = {
-    COMBUSTIBLES: "fecha_repostaje",
-    PEAJES: "fecha_peaje",
-    PARKING: "fecha_aparcamiento",
-    HOSPEDAJE: "fecha_entrada_hospedaje",
-    MANUTENCION: "fecha_manutencion",
-    ITV: "fecha_inspeccion",
-    REPUESTOS_RECAMBIO: "fecha_compra_repuestos",
-    MANTENIMIENTO_REPARACIONES: "fecha_compra_mantenimiento",
-    OTROS: "fecha_otros_gastos",
-    MULTAS_SANCIONES: "fecha_multa",
-    MULTAS: "fecha_multa",
-    KILOMETRAJE_COLABORADOR: "fecha_viaje_colaborador",
-  };
-  const typedKey = byTipo[tipo];
-  if (typedKey && String(e[typedKey] || "").trim()) {
-    return normalizeDateToDmy(e[typedKey]) || String(e[typedKey]).trim();
-  }
-  const candidates = [
-    e.fecha,
-    e.fecha_viaje_colaborador,
-    e.fecha_repostaje,
-    e.fecha_compra_mantenimiento,
-    e.fecha_compra_repuestos,
-    e.fecha_aparcamiento,
-    e.fecha_peaje,
-    e.fecha_entrada_hospedaje,
-    e.fecha_manutencion,
-    e.fecha_inspeccion,
-    e.fecha_otros_gastos,
-    e.fecha_multa,
-    e.createdAtLocal,
-  ];
-  for (const value of candidates) {
-    const raw = String(value ?? "").trim();
-    if (!raw) continue;
-    return normalizeDateToDmy(value) || raw;
-  }
-  return "";
+  return expenseDate(expense);
 }
 
 /** Línea base para enviar/actualizar hoja de gasto desde un gasto pendiente. */
@@ -586,7 +589,7 @@ export function expenseSheetLineFromPendingRow(row, rawExpense) {
     fecha: normalizeDateToDmy(r.fecha || expenseDisplayDate(raw) || "") || "",
     matricula: r.matricula || "",
     tipo_gasto: r.tipo_gasto || "",
-    concepto: expenseSheetConceptLabel({ tipo_gasto: r.tipo_gasto, concepto: r.tipo_gasto }),
+    concepto: resolveSheetLineConcepto(r, raw),
     entidad: r.entidad || "",
     numero_factura: r.numero_factura || "",
     proyecto: r.proyecto || "",
@@ -603,13 +606,37 @@ export function expenseSheetLineFromPendingRow(row, rawExpense) {
         ? r.iva_pct
         : raw?.iva_pct != null && String(raw.iva_pct).trim() !== ""
           ? raw.iva_pct
-          : "",
+          : raw?.iva_porcentaje != null && String(raw.iva_porcentaje).trim() !== ""
+            ? raw.iva_porcentaje
+            : "",
     iva_eur:
       r.iva_eur != null && String(r.iva_eur).trim() !== ""
         ? Number(parseNumeric(r.iva_eur).toFixed(2))
         : raw?.iva_eur != null && String(raw.iva_eur).trim() !== ""
           ? Number(parseNumeric(raw.iva_eur).toFixed(2))
-          : undefined,
+          : raw?.cuota_iva != null && String(raw.cuota_iva).trim() !== ""
+            ? Number(parseNumeric(raw.cuota_iva).toFixed(2))
+            : undefined,
+    id_viaje_propio: String(raw?.id_viaje_propio || r.id_viaje_propio || "").trim(),
+    num_personas: (() => {
+      const tipo = String(r.tipo_gasto || raw?.tipo_gasto || "").trim().toUpperCase();
+      if (tipo === "HOSPEDAJE" || tipo === "OTROS") {
+        return String(raw?.numero_personas_hospedaje || r.numero_personas_hospedaje || raw?.num_personas || "").trim();
+      }
+      if (tipo === "GASTOS_BILLETES") {
+        return String(
+          raw?.numero_personas_billete ||
+            r.numero_personas_billete ||
+            raw?.numero_personas_hospedaje ||
+            r.numero_personas_hospedaje ||
+            raw?.num_personas ||
+            r.num_personas ||
+            ""
+        ).trim();
+      }
+      if (tipo === "MANUTENCION") return String(raw?.numero_comensales_manutencion || r.numero_comensales_manutencion || "").trim();
+      return "";
+    })(),
     distancia_km: isKm ? Number(raw?.km_recorridos_colaborador || 0) || 0 : 0,
     eur_km: isKm ? Number(raw?.tarifa_eur_km_aplicada || 0) || 0 : 0,
     medio_transporte: isKm ? String(raw?.accion_colaborador || "coche propio").trim() : "",
@@ -624,16 +651,68 @@ export function expenseSheetLineFromPendingRow(row, rawExpense) {
   };
 }
 
+/** Normaliza forma de pago del gasto: usuario | tarjeta_empresa | transferencia | otro */
+export function normalizeExpenseFormaPagoKey_(formaPago) {
+  const f = String(formaPago || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
+  if (!f) return "usuario";
+  if (f === "usuario" || f === "u" || f === "user") return "usuario";
+  if (f === "transferencia") return "transferencia";
+  if (
+    f === "tarjeta grefa" ||
+    f === "tarjeta_grefa" ||
+    f === "tarjeta_empresa" ||
+    f === "tarjeta empresa" ||
+    (f.includes("tarjeta") && (f.includes("grefa") || f.includes("empresa") || f.includes("corporativa")))
+  ) {
+    return "tarjeta_empresa";
+  }
+  return f.replace(/\s+/g, "_");
+}
+
+export function isTarjetaEmpresaFormaPago(formaPago) {
+  return normalizeExpenseFormaPagoKey_(formaPago) === "tarjeta_empresa";
+}
+
+/** Gastos que pueden incluirse en una hoja (Usuario o tarjeta corporativa GREFA). */
+export function isEligibleFormaPagoForExpenseSheet(formaPago) {
+  const k = normalizeExpenseFormaPagoKey_(formaPago);
+  return k === "usuario" || k === "tarjeta_empresa";
+}
+
 /** Vacío en pestaña por tipo (sin columna forma_pago) se trata como pago Usuario. */
 export function isUserPaidFormaPago(formaPago) {
-  const f = String(formaPago || "").trim().toLowerCase();
-  if (!f) return true;
-  return f === "usuario";
+  return isEligibleFormaPagoForExpenseSheet(formaPago);
+}
+
+/** Normaliza hoja_gasto_id: vacío, guiones o marcadores no cuentan como hoja asignada. */
+export function normalizeExpenseHojaLink_(expense) {
+  if (!expense || typeof expense !== "object") return expense;
+  const raw = String(expense.hoja_gasto_id || "").trim();
+  const invalid = !raw || /^[-–—_\.]+$/.test(raw) || /^(n\/a|na|sin|ninguna|null)$/i.test(raw);
+  const hoja = invalid ? "" : raw;
+  return {
+    ...expense,
+    hoja_gasto_id: hoja,
+    ...(hoja
+      ? {}
+      : {
+          hoja_gasto_estado: "",
+          hoja_gasto_estado_pago: "",
+          num_hoja_gasto: "",
+          Num_Hoja_Gasto: "",
+        }),
+  };
 }
 
 export function isPendingUserPaidExpense(expense, options) {
-  if (!isUserPaidFormaPago(expense?.forma_pago)) return false;
-  const hoja = String(expense?.hoja_gasto_id || "").trim();
+  const e = normalizeExpenseHojaLink_(expense);
+  if (!isEligibleFormaPagoForExpenseSheet(e?.forma_pago)) return false;
+  const hoja = String(e?.hoja_gasto_id || "").trim();
   if (!hoja) return true;
   const failed = options && options.failedSheetIds;
   if (failed && typeof failed.has === "function" && failed.has(hoja)) return true;
@@ -689,27 +768,57 @@ export function isUserPaidExpenseForSheetEdit(expense, sheetId) {
   const sid = String(sheetId || "").trim();
   const hoja = String(expense?.hoja_gasto_id || "").trim();
   if (sid && hoja && hoja === sid) return true;
-  if (!isUserPaidFormaPago(expense?.forma_pago)) return false;
+  if (!isEligibleFormaPagoForExpenseSheet(expense?.forma_pago)) return false;
   return !hoja;
 }
 
-/** Enriquece fila API con datos locales (forma_pago, hoja) tras pull o dedupe. */
+/** Enriquece fila API con datos locales (forma_pago, tickets, fechas) tras pull o dedupe. */
 export function enrichExpenseFromLocalRow(sheetRow, localRow) {
-  if (!sheetRow || !localRow) return sheetRow;
+  if (!sheetRow || !localRow) return normalizeExpenseRowForApp(normalizeExpenseHojaLink_(sheetRow));
   const out = { ...sheetRow };
   if (!String(out.forma_pago || "").trim() && localRow.forma_pago) out.forma_pago = localRow.forma_pago;
   if (!String(out.id_gasto || "").trim() && localRow.id_gasto) out.id_gasto = localRow.id_gasto;
-  if (!String(out.hoja_gasto_id || "").trim() && localRow.hoja_gasto_id) out.hoja_gasto_id = localRow.hoja_gasto_id;
+  // No copiar hoja_gasto_id local → evita bloquear selección con vínculos obsoletos del móvil.
   if (!String(out.responsable_email || "").trim() && localRow.responsable_email) {
     out.responsable_email = localRow.responsable_email;
   }
   if (!String(out.usuario_email || "").trim() && localRow.usuario_email) {
     out.usuario_email = localRow.usuario_email;
   }
+  if (!String(out.user_email || "").trim() && localRow.user_email) {
+    out.user_email = localRow.user_email;
+  }
   if (!String(out.id_viaje_propio || "").trim() && localRow.id_viaje_propio) {
     out.id_viaje_propio = localRow.id_viaje_propio;
   }
-  return normalizeExpenseRowForApp(out);
+
+  // Si la fecha local (tras editar) difiere del Sheet, conservar fechas locales.
+  const localFecha = expenseDate(localRow);
+  const remoteFecha = expenseDate(sheetRow);
+  if (localFecha && remoteFecha && localFecha !== remoteFecha) {
+    const dateKeys = [
+      "fecha",
+      "fecha_repostaje",
+      "fecha_peaje",
+      "fecha_aparcamiento",
+      "fecha_otros_gastos",
+      "fecha_inspeccion",
+      "fecha_compra_repuestos",
+      "fecha_compra_mantenimiento",
+      "fecha_multa",
+      "fecha_viaje_colaborador",
+      "fecha_inicio_seguro",
+      "fecha_fin_seguro",
+      "fecha_pago",
+      "periodo_ivm",
+    ];
+    for (const k of dateKeys) {
+      if (String(localRow?.[k] ?? "").trim()) out[k] = localRow[k];
+    }
+    out.fecha = localRow.fecha || localFecha;
+  }
+
+  return normalizeExpenseRowForApp(normalizeExpenseHojaLink_(out));
 }
 
 /** IDs de hoja equivalentes (id listado vs hoja_gasto_id en GASTOS). */

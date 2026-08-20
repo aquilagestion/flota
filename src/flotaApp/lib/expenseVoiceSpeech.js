@@ -121,7 +121,14 @@ function startWebExpenseVoiceListen_({ onResult, onError, onEnd, continuous = tr
   };
 }
 
-function startNativeExpenseVoiceListen_({ onResult, onError, onEnd, continuous = true, autoRestart = true }) {
+function startNativeExpenseVoiceListen_({
+  onResult,
+  onError,
+  onEnd,
+  continuous = true,
+  autoRestart = true,
+  contextualStrings = null,
+}) {
   const handlers = [];
   let active = true;
 
@@ -132,11 +139,16 @@ function startNativeExpenseVoiceListen_({ onResult, onError, onEnd, continuous =
   };
 
   const startOnce = () => {
-    ExpoSpeechRecognitionModule.start({
+    const hints = Array.isArray(contextualStrings)
+      ? contextualStrings.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 80)
+      : [];
+    const opts = {
       lang: VOICE_LANG,
       interimResults: true,
       continuous,
-    });
+    };
+    if (hints.length) opts.contextualStrings = hints;
+    ExpoSpeechRecognitionModule.start(opts);
   };
 
   add("result", (event) => {
